@@ -1,0 +1,7 @@
+{
+  "name": "saferepo",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ]
+}
