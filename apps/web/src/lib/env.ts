@@ -35,6 +35,11 @@ const envSchema = z.object({
     .number()
     .positive()
     .default(86_400_000), // 24 hours
+  MAX_REPO_SIZE_MB: z.coerce
+    .number()
+    .positive()
+    .default(100),
+  SCAN_WORKSPACE_DIR: z.string().optional(),
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
@@ -60,6 +65,8 @@ function loadEnv(): Env {
       NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000',
       ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS ?? 'http://localhost:3000',
       SESSION_MAX_AGE_MS: Number(process.env.SESSION_MAX_AGE_MS) || 86_400_000,
+      MAX_REPO_SIZE_MB: Number(process.env.MAX_REPO_SIZE_MB) || 100,
+      SCAN_WORKSPACE_DIR: process.env.SCAN_WORKSPACE_DIR,
       NODE_ENV: 'test',
     };
   }

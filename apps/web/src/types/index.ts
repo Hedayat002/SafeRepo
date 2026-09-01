@@ -77,3 +77,50 @@ export interface HealthResponse {
   db: 'connected' | 'disconnected';
   timestamp: string;
 }
+
+/** Scan lifecycle statuses */
+export type ScanStatus =
+  | 'queued'
+  | 'cloning'
+  | 'scanning'
+  | 'normalizing'
+  | 'completed'
+  | 'failed'
+  | 'timed_out';
+
+/** Finding severity summary */
+export interface ScanSummary {
+  total: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+}
+
+/** User-facing scan metadata */
+export interface ScanResponseData {
+  id: string;
+  userId: string;
+  repositoryOwner: string;
+  repositoryName: string;
+  repositoryUrl: string;
+  branch: string;
+  commitSha: string | null;
+  status: ScanStatus;
+  scanners: string[];
+  summary: ScanSummary;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  duration: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Input for initiating a scan */
+export interface CreateScanInput {
+  repositoryOwner: string;
+  repositoryName: string;
+  branch?: string;
+}

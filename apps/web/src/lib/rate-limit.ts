@@ -105,6 +105,8 @@ export const RATE_LIMITS = {
   auth: { maxRequests: 100, windowMs: 15 * 60 * 1000 } satisfies RateLimitConfig,
   /** Authenticated API routes: 1000 requests / 15 minutes per IP */
   api: { maxRequests: 1000, windowMs: 15 * 60 * 1000 } satisfies RateLimitConfig,
+  /** Scan creation: 10 requests / 1 minute per IP/user */
+  scans: { maxRequests: 10, windowMs: 60 * 1000 } satisfies RateLimitConfig,
 } as const;
 
 /**
