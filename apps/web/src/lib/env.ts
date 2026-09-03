@@ -40,6 +40,16 @@ const envSchema = z.object({
     .positive()
     .default(100),
   SCAN_WORKSPACE_DIR: z.string().optional(),
+  SEMGREP_IMAGE: z.string().default('semgrep/semgrep:1.100.0'),
+  SEMGREP_TIMEOUT_MS: z.coerce
+    .number()
+    .positive()
+    .default(180_000), // 180 seconds
+  SEMGREP_MEMORY_LIMIT: z.string().default('512m'),
+  MAX_SCANNER_STDOUT_BYTES: z.coerce
+    .number()
+    .positive()
+    .default(10 * 1024 * 1024), // 10 MB
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
@@ -67,6 +77,10 @@ function loadEnv(): Env {
       SESSION_MAX_AGE_MS: Number(process.env.SESSION_MAX_AGE_MS) || 86_400_000,
       MAX_REPO_SIZE_MB: Number(process.env.MAX_REPO_SIZE_MB) || 100,
       SCAN_WORKSPACE_DIR: process.env.SCAN_WORKSPACE_DIR,
+      SEMGREP_IMAGE: process.env.SEMGREP_IMAGE ?? 'semgrep/semgrep:1.100.0',
+      SEMGREP_TIMEOUT_MS: Number(process.env.SEMGREP_TIMEOUT_MS) || 180_000,
+      SEMGREP_MEMORY_LIMIT: process.env.SEMGREP_MEMORY_LIMIT ?? '512m',
+      MAX_SCANNER_STDOUT_BYTES: Number(process.env.MAX_SCANNER_STDOUT_BYTES) || 10 * 1024 * 1024,
       NODE_ENV: 'test',
     };
   }

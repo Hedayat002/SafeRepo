@@ -70,3 +70,21 @@ export const scanIdParamSchema = z.object({
 });
 
 export type ScanIdParam = z.infer<typeof scanIdParamSchema>;
+
+/** Query parameters for GET /api/v1/scans/:id/findings */
+export const findingsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  per_page: z.coerce.number().int().min(1).max(100).default(20),
+  severity: z
+    .enum(['critical', 'high', 'medium', 'low', 'info'])
+    .optional(),
+  category: z
+    .enum(['sast', 'dependency', 'secret', 'configuration', 'license'])
+    .optional(),
+  scanner: z
+    .enum(['semgrep', 'trivy', 'gitleaks', 'osv', 'npm-audit', 'pip-audit'])
+    .optional(),
+});
+
+export type FindingsQuery = z.infer<typeof findingsQuerySchema>;
+

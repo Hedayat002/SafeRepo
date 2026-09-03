@@ -4,7 +4,10 @@ import path from 'path';
 import { env } from '@/lib/env';
 import { logger } from '@/lib/logger';
 import { createWorkspace, cleanupWorkspace, validateWorkspaceSymlinks } from './workspace';
+import { executeSemgrepScan } from './semgrep';
+import { ScannerTimeoutError } from './runner';
 import { Scan } from '@/models/scan';
+import { Finding } from '@/models/finding';
 
 /**
  * Safe Repository Acquisition Engine.
@@ -187,25 +190,34 @@ export async function acquireRepository(
 }
 
 /**
- * Orchestrates acquisition for a Scan document in MongoDB.
- * Updates scan status: queued -> cloning -> (ready/failed).
+ * Orchestrates full scan pipeline for a Scan document in MongoDB.
+ * Lifecycle transitions:
+ *   queued -> cloning -> scanning -> normalizing -> completed
+ * Failure transitions:
+ *   cloning/scanning/normalizing -> failed | timed_out
+ * Guaranteed cleanup:
+ *   Workspace directory is cleaned up in finally block.
+ *   Partial findings are purged on failure to prevent inconsistent state.
  */
-export async function processScanAcquisition(
+export async function processScanPipeline(
   scanId: string,
   accessToken: string
 ): Promise<void> {
   const scan = await Scan.findById(scanId);
   if (!scan) {
-    logger.error({ scanId }, 'Scan not found during acquisition kickoff');
+    logger.error({ scanId }, 'Scan not found during pipeline kickoff');
     return;
   }
 
+  let workspacePath: string | null = null;
+
   try {
+    // 1. Safe Repository Acquisition
     scan.status = 'cloning';
     scan.startedAt = new Date();
     await scan.save();
 
-    const result = await acquireRepository({
+    const acquireResult = await acquireRepository({
       scanId,
       repositoryOwner: scan.repositoryOwner,
       repositoryName: scan.repositoryName,
@@ -213,19 +225,85 @@ export async function processScanAcquisition(
       accessToken,
     });
 
-    scan.commitSha = result.commitSha;
-    scan.workspacePath = result.workspacePath;
-    // In Phase 02, safe acquisition is verified.
-    // In Phase 03, the status will proceed to 'scanning'.
+    workspacePath = acquireResult.workspacePath;
+    scan.commitSha = acquireResult.commitSha;
+    scan.workspacePath = workspacePath;
+
+    // 2. Semgrep SAST Scanning
+    scan.status = 'scanning';
     await scan.save();
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    scan.status = 'failed';
-    scan.error = errorMsg;
+
+    const scanResult = await executeSemgrepScan({
+      scanId,
+      userId: scan.userId.toString(),
+      workspacePath,
+    });
+
+    // 3. Normalization & Persistence
+    scan.status = 'normalizing';
+    await scan.save();
+
+    const { findings, summary } = scanResult.normalization;
+
+    // Batch insert findings in chunks of 500
+    if (findings.length > 0) {
+      const batchSize = 500;
+      for (let i = 0; i < findings.length; i += batchSize) {
+        const batch = findings.slice(i, i + batchSize);
+        await Finding.insertMany(batch, { ordered: false });
+      }
+    }
+
+    // 4. Complete Scan Record
+    scan.status = 'completed';
+    scan.summary = summary;
     scan.completedAt = new Date();
     if (scan.startedAt) {
       scan.duration = scan.completedAt.getTime() - scan.startedAt.getTime();
     }
     await scan.save();
+
+    logger.info(
+      { scanId, summary, durationMs: scan.duration },
+      'Scan pipeline completed successfully'
+    );
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    const isTimeout = err instanceof ScannerTimeoutError || errorMsg.includes('timed out');
+
+    logger.error({ scanId, error: errorMsg, isTimeout }, 'Scan pipeline failed');
+
+    // Purge any partial findings to maintain database consistency
+    try {
+      await Finding.deleteMany({ scanId: scan._id });
+    } catch (cleanupErr) {
+      logger.warn({ scanId, cleanupErr }, 'Failed to purge partial findings');
+    }
+
+    scan.status = isTimeout ? 'timed_out' : 'failed';
+    scan.error = errorMsg;
+    scan.summary = { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    scan.completedAt = new Date();
+    if (scan.startedAt) {
+      scan.duration = scan.completedAt.getTime() - scan.startedAt.getTime();
+    }
+    await scan.save();
+  } finally {
+    // 5. Guaranteed Workspace Cleanup
+    if (workspacePath) {
+      try {
+        await cleanupWorkspace(workspacePath);
+        scan.workspacePath = null;
+        await scan.save();
+      } catch (err) {
+        logger.warn({ scanId, workspacePath, err }, 'Failed to cleanup workspace in finally');
+      }
+    }
   }
 }
+
+/**
+ * Backwards-compatible alias for processScanPipeline.
+ */
+export const processScanAcquisition = processScanPipeline;
+
