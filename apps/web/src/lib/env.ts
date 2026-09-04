@@ -50,6 +50,19 @@ const envSchema = z.object({
     .number()
     .positive()
     .default(10 * 1024 * 1024), // 10 MB
+  // Phase 04: Trivy & OSV
+  TRIVY_IMAGE: z.string().default('aquasec/trivy:0.59.1'),
+  TRIVY_TIMEOUT_MS: z.coerce
+    .number()
+    .positive()
+    .default(180_000), // 180 seconds
+  TRIVY_MEMORY_LIMIT: z.string().default('512m'),
+  TRIVY_DB_PATH: z.string().optional(),
+  OSV_API_URL: z.string().url().default('https://api.osv.dev/v1/querybatch'),
+  OSV_TIMEOUT_MS: z.coerce
+    .number()
+    .positive()
+    .default(30_000), // 30 seconds
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
@@ -81,6 +94,12 @@ function loadEnv(): Env {
       SEMGREP_TIMEOUT_MS: Number(process.env.SEMGREP_TIMEOUT_MS) || 180_000,
       SEMGREP_MEMORY_LIMIT: process.env.SEMGREP_MEMORY_LIMIT ?? '512m',
       MAX_SCANNER_STDOUT_BYTES: Number(process.env.MAX_SCANNER_STDOUT_BYTES) || 10 * 1024 * 1024,
+      TRIVY_IMAGE: process.env.TRIVY_IMAGE ?? 'aquasec/trivy:0.59.1',
+      TRIVY_TIMEOUT_MS: Number(process.env.TRIVY_TIMEOUT_MS) || 180_000,
+      TRIVY_MEMORY_LIMIT: process.env.TRIVY_MEMORY_LIMIT ?? '512m',
+      TRIVY_DB_PATH: process.env.TRIVY_DB_PATH,
+      OSV_API_URL: process.env.OSV_API_URL ?? 'https://api.osv.dev/v1/querybatch',
+      OSV_TIMEOUT_MS: Number(process.env.OSV_TIMEOUT_MS) || 30_000,
       NODE_ENV: 'test',
     };
   }

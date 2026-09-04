@@ -5,21 +5,32 @@ import { env } from '@/lib/env';
 import { logger } from '@/lib/logger';
 import { createWorkspace, cleanupWorkspace, validateWorkspaceSymlinks } from './workspace';
 import { executeSemgrepScan } from './semgrep';
+import { detectEcosystems } from './ecosystem';
+import { executeTrivyScan, type TrivyVulnerabilityFinding } from './trivy';
+import { executeOsvScan, type OsvVulnerabilityFinding } from './osv';
+import {
+  normalizeDependencyFindings,
+  type NormalizedFindingInput,
+} from './normalizer';
 import { ScannerTimeoutError } from './runner';
 import { Scan } from '@/models/scan';
 import { Finding } from '@/models/finding';
+import type { FindingScanner, ScanSummary } from '@/types';
 
 /**
- * Safe Repository Acquisition Engine.
+ * Safe Repository Acquisition & Multi-Scanner Orchestration Engine.
  *
- * Implements FR-05, NFR-02, NFR-03:
+ * Implements FR-05, FR-06, FR-07, FR-09, FR-12, NFR-02, NFR-03:
  * - Safely clones untrusted repositories with strict hardening.
- * - Enforces `-c core.hooksPath=/dev/null` to neutralize malicious repository git hooks.
+ * - Enforces `-c core.hooksPath=/dev/null` to neutralize malicious git hooks.
  * - Uses `--depth 1` and `--single-branch` for shallow clone.
  * - Traverses and validates all symlinks to prevent directory traversal escapes.
  * - Enforces size limits (`MAX_REPO_SIZE_MB`).
- * - Updates scan status through lifecycle transitions:
- *     queued -> cloning -> (ready for scanning in Phase 03) / failed.
+ * - Detects dependency ecosystems and extracts coordinates statically without executing code.
+ * - Orchestrates fault-isolated execution of Semgrep, Trivy, and OSV scanners.
+ * - Normalizes and deduplicates findings cross-scanner using deterministic SHA-256 fingerprints.
+ * - Aggregates scan summary severity metrics and persists findings in MongoDB.
+ * - Unconditionally cleans up ephemeral workspace in finally block.
  */
 
 export interface AcquireRepositoryOptions {
@@ -35,6 +46,20 @@ export interface AcquireRepositoryResult {
   workspacePath: string;
   commitSha: string;
   sizeBytes: number;
+}
+
+export interface ScannerErrorRecord {
+  scanner: FindingScanner;
+  status: 'unavailable' | 'failed';
+  reason?: string;
+  error?: string;
+}
+
+/**
+ * Sanitize error messages to prevent credential leakage.
+ */
+function sanitizeErrorMessage(msg: string): string {
+  return msg.replace(/gho_[a-zA-Z0-9_]+/g, '[REDACTED]');
 }
 
 /**
@@ -99,7 +124,7 @@ function runGitCommand(
         resolve({ stdout, stderr });
       } else {
         // Redact any access token from error message if present
-        const sanitizedStderr = stderr.replace(/gho_[a-zA-Z0-9_]+/g, '[REDACTED]');
+        const sanitizedStderr = sanitizeErrorMessage(stderr);
         reject(new Error(`Git command failed (code ${code}): ${sanitizedStderr}`));
       }
     });
@@ -183,21 +208,22 @@ export async function acquireRepository(
   } catch (err) {
     // Cleanup on failure
     await cleanupWorkspace(workspacePath);
-    const errorMsg = err instanceof Error ? err.message : String(err);
+    const errorMsg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
     logger.error({ scanId, error: errorMsg }, 'Repository acquisition failed');
     throw err;
   }
 }
 
 /**
- * Orchestrates full scan pipeline for a Scan document in MongoDB.
+ * Orchestrates full multi-scanner scan pipeline for a Scan document in MongoDB.
  * Lifecycle transitions:
  *   queued -> cloning -> scanning -> normalizing -> completed
  * Failure transitions:
  *   cloning/scanning/normalizing -> failed | timed_out
+ * Fault isolation:
+ *   Individual scanner failures do not abort or discard findings from successful scanners.
  * Guaranteed cleanup:
- *   Workspace directory is cleaned up in finally block.
- *   Partial findings are purged on failure to prevent inconsistent state.
+ *   Workspace directory is cleaned up unconditionally in finally block.
  */
 export async function processScanPipeline(
   scanId: string,
@@ -229,34 +255,193 @@ export async function processScanPipeline(
     scan.commitSha = acquireResult.commitSha;
     scan.workspacePath = workspacePath;
 
-    // 2. Semgrep SAST Scanning
+    // 2. Ecosystem & Dependency Coordinate Detection
+    const ecosystemResult = await detectEcosystems(workspacePath);
+
+    // 3. Multi-Scanner Scanning Phase (Fault-Isolated)
     scan.status = 'scanning';
     await scan.save();
 
-    const scanResult = await executeSemgrepScan({
-      scanId,
-      userId: scan.userId.toString(),
-      workspacePath,
-    });
+    const successfulScanners: FindingScanner[] = [];
+    const scannerErrors: ScannerErrorRecord[] = [];
+    const warnings: string[] = [];
 
-    // 3. Normalization & Persistence
+    let semgrepFindings: NormalizedFindingInput[] = [];
+    let trivyFindings: TrivyVulnerabilityFinding[] = [];
+    let osvFindings: OsvVulnerabilityFinding[] = [];
+
+    // --- Scanner 1: Semgrep SAST ---
+    try {
+      const semgrepResult = await executeSemgrepScan({
+        scanId,
+        userId: scan.userId.toString(),
+        workspacePath,
+      });
+      semgrepFindings = semgrepResult.normalization.findings;
+      successfulScanners.push('semgrep');
+    } catch (err) {
+      const isTimeout =
+        err instanceof ScannerTimeoutError ||
+        (err instanceof Error && err.message.includes('timed out'));
+      if (isTimeout) {
+        throw err;
+      }
+      const errorMsg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      logger.error({ scanId, err: errorMsg }, 'Semgrep scan failed');
+      scannerErrors.push({
+        scanner: 'semgrep',
+        status: 'failed',
+        error: errorMsg,
+      });
+      warnings.push(`Warning: Semgrep scan failed (${errorMsg})`);
+    }
+
+    // --- Scanner 2: Trivy SCA Filesystem ---
+    try {
+      const trivyResult = await executeTrivyScan({
+        scanId,
+        userId: scan.userId.toString(),
+        workspacePath,
+      });
+
+      if (trivyResult.status === 'success') {
+        successfulScanners.push('trivy');
+        trivyFindings = trivyResult.findings;
+      } else if (trivyResult.status === 'unavailable') {
+        const reason = sanitizeErrorMessage(trivyResult.reason);
+        logger.warn({ scanId, reason }, 'Trivy offline DB unavailable');
+        scannerErrors.push({
+          scanner: 'trivy',
+          status: 'unavailable',
+          reason,
+        });
+        warnings.push(`Warning: Trivy unavailable (${reason})`);
+      } else if (trivyResult.status === 'failed') {
+        const error = sanitizeErrorMessage(trivyResult.error);
+        logger.error({ scanId, error }, 'Trivy scanner failed');
+        scannerErrors.push({
+          scanner: 'trivy',
+          status: 'failed',
+          error,
+        });
+        warnings.push(`Warning: Trivy scan failed (${error})`);
+      }
+    } catch (err) {
+      const isTimeout =
+        err instanceof ScannerTimeoutError ||
+        (err instanceof Error && err.message.includes('timed out'));
+      if (isTimeout) {
+        throw err;
+      }
+      const errorMsg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      logger.error({ scanId, err: errorMsg }, 'Trivy scan encountered unexpected error');
+      scannerErrors.push({
+        scanner: 'trivy',
+        status: 'failed',
+        error: errorMsg,
+      });
+      warnings.push(`Warning: Trivy scan failed (${errorMsg})`);
+    }
+
+    // --- Scanner 3: OSV Dependency Advisories ---
+    try {
+      if (ecosystemResult.coordinates.length === 0) {
+        // Zero dependency coordinates: OSV performs zero HTTP requests and succeeds with 0 findings
+        successfulScanners.push('osv');
+        osvFindings = [];
+      } else {
+        const osvResult = await executeOsvScan({
+          scanId,
+          userId: scan.userId.toString(),
+          coordinates: ecosystemResult.coordinates,
+        });
+
+        if (osvResult.status === 'success') {
+          successfulScanners.push('osv');
+          osvFindings = osvResult.findings;
+        } else if (osvResult.status === 'failed') {
+          const error = sanitizeErrorMessage(osvResult.error);
+          logger.error({ scanId, error }, 'OSV query failed');
+          scannerErrors.push({
+            scanner: 'osv',
+            status: 'failed',
+            error,
+          });
+          warnings.push(`Warning: OSV query failed (${error})`);
+        }
+      }
+    } catch (err) {
+      const isTimeout =
+        err instanceof ScannerTimeoutError ||
+        (err instanceof Error && err.message.includes('timed out'));
+      if (isTimeout) {
+        throw err;
+      }
+      const errorMsg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      logger.error({ scanId, err: errorMsg }, 'OSV scan encountered unexpected error');
+      scannerErrors.push({
+        scanner: 'osv',
+        status: 'failed',
+        error: errorMsg,
+      });
+      warnings.push(`Warning: OSV query failed (${errorMsg})`);
+    }
+
+    // 4. Normalization, Deduplication & Aggregation
     scan.status = 'normalizing';
     await scan.save();
 
-    const { findings, summary } = scanResult.normalization;
+    let dependencyFindings: NormalizedFindingInput[] = [];
+    if (trivyFindings.length > 0 || osvFindings.length > 0) {
+      const depNormResult = normalizeDependencyFindings(scanId, scan.userId.toString(), {
+        trivyFindings,
+        osvFindings,
+      });
+      dependencyFindings = depNormResult.findings;
+    }
 
-    // Batch insert findings in chunks of 500
-    if (findings.length > 0) {
+    const allFindings = [...semgrepFindings, ...dependencyFindings];
+
+    const summary: ScanSummary = {
+      total: allFindings.length,
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    };
+    for (const finding of allFindings) {
+      summary[finding.severity]++;
+    }
+
+    // 5. Findings Persistence
+    if (allFindings.length > 0) {
       const batchSize = 500;
-      for (let i = 0; i < findings.length; i += batchSize) {
-        const batch = findings.slice(i, i + batchSize);
+      for (let i = 0; i < allFindings.length; i += batchSize) {
+        const batch = allFindings.slice(i, i + batchSize);
         await Finding.insertMany(batch, { ordered: false });
       }
     }
 
-    // 4. Complete Scan Record
-    scan.status = 'completed';
-    scan.summary = summary;
+    // 6. Complete Scan Record
+    if (successfulScanners.length === 0) {
+      scan.status = 'failed';
+      scan.scanners = [];
+      scan.error =
+        warnings.length > 0
+          ? `Scan failed: All scanners failed (${warnings.join('; ')})`
+          : 'Scan failed: All scanners failed';
+      scan.summary = { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    } else {
+      scan.status = 'completed';
+      scan.scanners = successfulScanners;
+      scan.error = warnings.length > 0 ? warnings.join('; ') : null;
+      scan.summary = summary;
+    }
+
+    scan.set('metadata', { scannerErrors }, { strict: false });
+    (scan as unknown as { metadata: Record<string, unknown> }).metadata = { scannerErrors };
+
     scan.completedAt = new Date();
     if (scan.startedAt) {
       scan.duration = scan.completedAt.getTime() - scan.startedAt.getTime();
@@ -264,16 +449,22 @@ export async function processScanPipeline(
     await scan.save();
 
     logger.info(
-      { scanId, summary, durationMs: scan.duration },
-      'Scan pipeline completed successfully'
+      {
+        scanId,
+        scanners: scan.scanners,
+        findingsCount: allFindings.length,
+        summary,
+        durationMs: scan.duration,
+      },
+      'Scan pipeline finished processing'
     );
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
+    const errorMsg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
     const isTimeout = err instanceof ScannerTimeoutError || errorMsg.includes('timed out');
 
-    logger.error({ scanId, error: errorMsg, isTimeout }, 'Scan pipeline failed');
+    logger.error({ scanId, error: errorMsg, isTimeout }, 'Scan pipeline encountered fatal failure');
 
-    // Purge any partial findings to maintain database consistency
+    // Purge partial findings to maintain database consistency
     try {
       await Finding.deleteMany({ scanId: scan._id });
     } catch (cleanupErr) {
@@ -282,6 +473,7 @@ export async function processScanPipeline(
 
     scan.status = isTimeout ? 'timed_out' : 'failed';
     scan.error = errorMsg;
+    scan.scanners = [];
     scan.summary = { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 };
     scan.completedAt = new Date();
     if (scan.startedAt) {
@@ -289,7 +481,7 @@ export async function processScanPipeline(
     }
     await scan.save();
   } finally {
-    // 5. Guaranteed Workspace Cleanup
+    // 7. Guaranteed Workspace Cleanup
     if (workspacePath) {
       try {
         await cleanupWorkspace(workspacePath);
@@ -306,4 +498,3 @@ export async function processScanPipeline(
  * Backwards-compatible alias for processScanPipeline.
  */
 export const processScanAcquisition = processScanPipeline;
-

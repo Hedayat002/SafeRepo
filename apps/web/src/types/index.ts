@@ -225,3 +225,54 @@ export interface SemgrepRawOutput {
   version?: string;
 }
 
+/** Supported dependency ecosystems */
+export type DependencyEcosystem = 'npm' | 'pypi';
+
+/** Static dependency coordinate extracted from repository manifests */
+export interface DependencyCoordinate {
+  name: string;
+  version: string;
+  ecosystem: DependencyEcosystem;
+  manifestPath: string;
+}
+
+/** Result of static ecosystem and manifest detection */
+export interface EcosystemDetectionResult {
+  hasNode: boolean;
+  hasPython: boolean;
+  coordinates: DependencyCoordinate[];
+  manifests: {
+    node: string[];
+    python: string[];
+  };
+}
+
+/** Discriminated union for scanner execution results */
+export interface BaseScannerResult {
+  scanner: FindingScanner;
+}
+
+export interface ScannerSuccessResult<T = unknown> extends BaseScannerResult {
+  status: 'success';
+  findings: T[];
+  durationMs: number;
+  rawMatchesCount: number;
+}
+
+export interface ScannerUnavailableResult extends BaseScannerResult {
+  status: 'unavailable';
+  scanner: 'trivy';
+  reason: string;
+}
+
+export interface ScannerFailedResult extends BaseScannerResult {
+  status: 'failed';
+  error: string;
+  durationMs?: number;
+}
+
+export type ScannerResult<T = unknown> =
+  | ScannerSuccessResult<T>
+  | ScannerUnavailableResult
+  | ScannerFailedResult;
+

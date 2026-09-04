@@ -228,4 +228,363 @@ describe('GET /api/v1/scans/:id/findings', () => {
     expect(body3.meta.total).toBe(3);
     expect(body3.meta.pages).toBe(2);
   });
+
+  describe('Phase 04 Dependency Findings Integration', () => {
+    it('filters findings by category=dependency and category=sast', async () => {
+      const user = await User.create({
+        githubId: '2001',
+        username: 'depUser1',
+      });
+
+      const scan = await Scan.create({
+        userId: user._id,
+        repositoryOwner: 'depUser1',
+        repositoryName: 'dep-project',
+        repositoryUrl: 'https://github.com/depUser1/dep-project',
+        branch: 'main',
+        status: 'completed',
+      });
+
+      await Finding.create([
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'semgrep',
+          category: 'sast',
+          severity: 'high',
+          title: 'SAST Finding',
+          description: 'SAST desc',
+          file: 'src/app.ts',
+          line: 10,
+          vulnerabilityId: 'sast-rule',
+          fingerprint: 'fp-sast-1',
+        },
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'trivy',
+          category: 'dependency',
+          severity: 'high',
+          title: 'CVE-2021-23337 in lodash',
+          description: 'Command injection in lodash',
+          file: 'package-lock.json',
+          line: 0,
+          package: 'lodash',
+          packageVersion: '4.17.20',
+          fixedVersion: '4.17.21',
+          vulnerabilityId: 'CVE-2021-23337',
+          remediation: 'Upgrade lodash to 4.17.21',
+          fingerprint: 'fp-dep-1',
+          metadata: { scanners: ['trivy'], ecosystem: 'npm', aliases: ['CVE-2021-23337'] },
+        },
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'osv',
+          category: 'dependency',
+          severity: 'medium',
+          title: 'CVE-2020-28168 in axios',
+          description: 'SSRF in axios',
+          file: 'package-lock.json',
+          line: 0,
+          package: 'axios',
+          packageVersion: '0.21.1',
+          fixedVersion: '0.21.2',
+          vulnerabilityId: 'CVE-2020-28168',
+          remediation: 'Upgrade axios to 0.21.2',
+          fingerprint: 'fp-dep-2',
+          metadata: { scanners: ['osv'], ecosystem: 'npm', aliases: ['CVE-2020-28168'] },
+        },
+      ]);
+
+      const sessionId = await createSession(user._id.toString(), 'tokenDep');
+      vi.spyOn(sessionModule, 'getSessionIdFromCookies').mockResolvedValue(sessionId);
+
+      // Query category=dependency
+      const reqDep = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?category=dependency`,
+        {
+          headers: { cookie: `saferepo_session=${sessionId}` },
+        }
+      );
+
+      const resDep = await GET(reqDep, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resDep.status).toBe(200);
+      const bodyDep = await resDep.json();
+      expect(bodyDep.data.length).toBe(2);
+      expect(bodyDep.meta.total).toBe(2);
+      expect(bodyDep.data.every((f: { category: string }) => f.category === 'dependency')).toBe(true);
+
+      // Query category=sast
+      const reqSast = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?category=sast`,
+        {
+          headers: { cookie: `saferepo_session=${sessionId}` },
+        }
+      );
+
+      const resSast = await GET(reqSast, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resSast.status).toBe(200);
+      const bodySast = await resSast.json();
+      expect(bodySast.data.length).toBe(1);
+      expect(bodySast.data[0].category).toBe('sast');
+      expect(bodySast.data[0].title).toBe('SAST Finding');
+    });
+
+    it('filters findings by scanner=trivy and scanner=osv', async () => {
+      const user = await User.create({
+        githubId: '2002',
+        username: 'depUser2',
+      });
+
+      const scan = await Scan.create({
+        userId: user._id,
+        repositoryOwner: 'depUser2',
+        repositoryName: 'scanner-filter-project',
+        repositoryUrl: 'https://github.com/depUser2/scanner-filter-project',
+        branch: 'main',
+        status: 'completed',
+      });
+
+      await Finding.create([
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'trivy',
+          category: 'dependency',
+          severity: 'high',
+          title: 'Trivy Finding',
+          description: 'Desc',
+          file: 'package-lock.json',
+          line: 0,
+          package: 'lodash',
+          vulnerabilityId: 'CVE-2021-23337',
+          fingerprint: 'fp-trivy',
+        },
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'osv',
+          category: 'dependency',
+          severity: 'critical',
+          title: 'OSV Finding',
+          description: 'Desc',
+          file: 'package-lock.json',
+          line: 0,
+          package: 'urllib3',
+          vulnerabilityId: 'CVE-2023-45803',
+          fingerprint: 'fp-osv',
+        },
+      ]);
+
+      const sessionId = await createSession(user._id.toString(), 'tokenDep2');
+      vi.spyOn(sessionModule, 'getSessionIdFromCookies').mockResolvedValue(sessionId);
+
+      // 1. Query scanner=trivy
+      const reqTrivy = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?scanner=trivy`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const resTrivy = await GET(reqTrivy, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resTrivy.status).toBe(200);
+      const bodyTrivy = await resTrivy.json();
+      expect(bodyTrivy.data.length).toBe(1);
+      expect(bodyTrivy.data[0].scanner).toBe('trivy');
+      expect(bodyTrivy.data[0].title).toBe('Trivy Finding');
+
+      // 2. Query scanner=osv
+      const reqOsv = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?scanner=osv`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const resOsv = await GET(reqOsv, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resOsv.status).toBe(200);
+      const bodyOsv = await resOsv.json();
+      expect(bodyOsv.data.length).toBe(1);
+      expect(bodyOsv.data[0].scanner).toBe('osv');
+      expect(bodyOsv.data[0].title).toBe('OSV Finding');
+    });
+
+    it('filters by compound criteria: category=dependency&severity=critical&scanner=osv', async () => {
+      const user = await User.create({
+        githubId: '2003',
+        username: 'depUser3',
+      });
+
+      const scan = await Scan.create({
+        userId: user._id,
+        repositoryOwner: 'depUser3',
+        repositoryName: 'compound-project',
+        repositoryUrl: 'https://github.com/depUser3/compound-project',
+        branch: 'main',
+        status: 'completed',
+      });
+
+      await Finding.create([
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'osv',
+          category: 'dependency',
+          severity: 'critical',
+          title: 'Critical OSV Finding',
+          description: 'Desc',
+          file: 'package-lock.json',
+          line: 0,
+          package: 'pkg-crit',
+          vulnerabilityId: 'CVE-2023-9999',
+          fingerprint: 'fp-crit',
+        },
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'osv',
+          category: 'dependency',
+          severity: 'medium',
+          title: 'Medium OSV Finding',
+          description: 'Desc',
+          file: 'package-lock.json',
+          line: 0,
+          package: 'pkg-med',
+          vulnerabilityId: 'CVE-2023-8888',
+          fingerprint: 'fp-med',
+        },
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'trivy',
+          category: 'dependency',
+          severity: 'critical',
+          title: 'Critical Trivy Finding',
+          description: 'Desc',
+          file: 'package-lock.json',
+          line: 0,
+          package: 'pkg-triv',
+          vulnerabilityId: 'CVE-2023-7777',
+          fingerprint: 'fp-triv',
+        },
+      ]);
+
+      const sessionId = await createSession(user._id.toString(), 'tokenDep3');
+      vi.spyOn(sessionModule, 'getSessionIdFromCookies').mockResolvedValue(sessionId);
+
+      const req = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?category=dependency&severity=critical&scanner=osv`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const res = await GET(req, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.length).toBe(1);
+      expect(body.data[0].title).toBe('Critical OSV Finding');
+      expect(body.data[0].severity).toBe('critical');
+      expect(body.data[0].scanner).toBe('osv');
+      expect(body.meta.total).toBe(1);
+    });
+
+    it('accurately serializes dependency-specific fields and deduplicated metadata in response', async () => {
+      const user = await User.create({
+        githubId: '2004',
+        username: 'depUser4',
+      });
+
+      const scan = await Scan.create({
+        userId: user._id,
+        repositoryOwner: 'depUser4',
+        repositoryName: 'serialize-project',
+        repositoryUrl: 'https://github.com/depUser4/serialize-project',
+        branch: 'main',
+        status: 'completed',
+      });
+
+      await Finding.create({
+        scanId: scan._id,
+        userId: user._id,
+        scanner: 'trivy',
+        category: 'dependency',
+        severity: 'critical',
+        title: 'CVE-2021-23337 in lodash',
+        description: 'Command Injection in lodash template',
+        file: 'package-lock.json',
+        line: 0,
+        package: 'lodash',
+        packageVersion: '4.17.20',
+        fixedVersion: '4.17.21',
+        vulnerabilityId: 'CVE-2021-23337',
+        remediation: 'Upgrade lodash to 4.17.21',
+        fingerprint: 'dependency:npm:lodash:4.17.20:CVE-2021-23337',
+        metadata: {
+          scanners: ['osv', 'trivy'],
+          ecosystem: 'npm',
+          aliases: ['CVE-2021-23337', 'GHSA-35jh-r3h4-6jhm'],
+          manifestPaths: ['package-lock.json'],
+        },
+      });
+
+      const sessionId = await createSession(user._id.toString(), 'tokenDep4');
+      vi.spyOn(sessionModule, 'getSessionIdFromCookies').mockResolvedValue(sessionId);
+
+      const req = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const res = await GET(req, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.length).toBe(1);
+
+      const item = body.data[0];
+      expect(item.package).toBe('lodash');
+      expect(item.packageVersion).toBe('4.17.20');
+      expect(item.fixedVersion).toBe('4.17.21');
+      expect(item.vulnerabilityId).toBe('CVE-2021-23337');
+      expect(item.remediation).toBe('Upgrade lodash to 4.17.21');
+      expect(item.category).toBe('dependency');
+      expect(item.severity).toBe('critical');
+      expect(item.metadata?.scanners).toEqual(['osv', 'trivy']);
+      expect(item.metadata?.ecosystem).toBe('npm');
+      expect(item.metadata?.aliases).toContain('CVE-2021-23337');
+      expect(item.metadata?.aliases).toContain('GHSA-35jh-r3h4-6jhm');
+    });
+
+    it('rejects invalid category and scanner parameters with 400 VALIDATION_ERROR', async () => {
+      const user = await User.create({
+        githubId: '2005',
+        username: 'depUser5',
+      });
+
+      const scan = await Scan.create({
+        userId: user._id,
+        repositoryOwner: 'depUser5',
+        repositoryName: 'validation-project',
+        repositoryUrl: 'https://github.com/depUser5/validation-project',
+        branch: 'main',
+        status: 'completed',
+      });
+
+      const sessionId = await createSession(user._id.toString(), 'tokenDep5');
+      vi.spyOn(sessionModule, 'getSessionIdFromCookies').mockResolvedValue(sessionId);
+
+      // Invalid category
+      const reqBadCat = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?category=invalid-category`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const resBadCat = await GET(reqBadCat, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resBadCat.status).toBe(400);
+      const bodyBadCat = await resBadCat.json();
+      expect(bodyBadCat.error.code).toBe('VALIDATION_ERROR');
+
+      // Invalid scanner
+      const reqBadScanner = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?scanner=unsupported-scanner`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const resBadScanner = await GET(reqBadScanner, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resBadScanner.status).toBe(400);
+      const bodyBadScanner = await resBadScanner.json();
+      expect(bodyBadScanner.error.code).toBe('VALIDATION_ERROR');
+    });
+  });
 });
+

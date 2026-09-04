@@ -36,9 +36,9 @@
 |-------|------|--------|
 | 00 | Project Definition and Architecture | ✅ Completed (HUMAN APPROVED) |
 | 01 | Application Foundation | ✅ Implemented (Awaiting Human Review) |
-| 02 | Safe Repository Acquisition | ⬜ Not Started |
-| 03 | Semgrep Integration | ⬜ Not Started |
-| 04 | Dependency Vulnerability Scanning | ⬜ Not Started |
+| 02 | Safe Repository Acquisition | ✅ Completed |
+| 03 | Semgrep Integration | ✅ Completed |
+| 04 | Dependency Vulnerability Scanning | ✅ Implemented (Awaiting Human Review) |
 | 05 | Secret Scanning | ⬜ Not Started |
 | 06 | Unified Scan Engine | ⬜ Not Started |
 | 07 | Security Dashboard | ⬜ Not Started |

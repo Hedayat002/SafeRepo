@@ -30,6 +30,12 @@ export class OutputSizeExceededError extends AppError {
   }
 }
 
+export interface DockerVolumeMount {
+  source: string;
+  target: string;
+  readonly?: boolean;
+}
+
 export interface RunDockerScannerOptions {
   scanId: string;
   scannerName: string;
@@ -40,6 +46,9 @@ export interface RunDockerScannerOptions {
   timeoutMs?: number;
   memoryLimit?: string;
   maxStdoutBytes?: number;
+  homeTmpfs?: string;
+  extraEnv?: Record<string, string>;
+  extraMounts?: DockerVolumeMount[];
 }
 
 export interface RunDockerScannerResult {
@@ -81,8 +90,21 @@ export function buildStage1DockerArgs(options: {
   image: string;
   memoryLimit: string;
   commandArgs: string[];
+  homeTmpfs?: string;
+  extraEnv?: Record<string, string>;
+  extraMounts?: DockerVolumeMount[];
 }): string[] {
-  const { containerName, workspacePath, rulesPath, image, memoryLimit, commandArgs } = options;
+  const {
+    containerName,
+    workspacePath,
+    rulesPath,
+    image,
+    memoryLimit,
+    commandArgs,
+    homeTmpfs,
+    extraEnv,
+    extraMounts,
+  } = options;
 
   // Resolve absolute paths
   const resolvedWorkspace = path.resolve(workspacePath);
@@ -94,21 +116,53 @@ export function buildStage1DockerArgs(options: {
     '--network=none',
     '--read-only',
     '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
-    '--tmpfs', '/home/semgrep:rw,noexec,nosuid,size=32m',
+  ];
+
+  // User home tmpfs
+  if (homeTmpfs) {
+    args.push('--tmpfs', homeTmpfs);
+  } else {
+    // Default Semgrep home tmpfs
+    args.push('--tmpfs', '/home/semgrep:rw,noexec,nosuid,size=32m');
+  }
+
+  args.push(
     '--security-opt=no-new-privileges',
     '--cap-drop=ALL',
     '--user', '1000:1000',
     '--cpus=1',
     '--memory', memoryLimit,
-    '--pids-limit=256',
-    '-e', 'XDG_CACHE_HOME=/tmp/cache',
-    '-e', 'SEMGREP_SETTINGS_FILE=/tmp/settings.yaml',
-    '-v', `${resolvedWorkspace}:/src:ro`,
-  ];
+    '--pids-limit=256'
+  );
+
+  // Environment variables
+  if (extraEnv) {
+    for (const [key, val] of Object.entries(extraEnv)) {
+      args.push('-e', `${key}=${val}`);
+    }
+  } else {
+    // Default Semgrep environment
+    args.push(
+      '-e', 'XDG_CACHE_HOME=/tmp/cache',
+      '-e', 'SEMGREP_SETTINGS_FILE=/tmp/settings.yaml'
+    );
+  }
+
+  // Workspace mount (always read-only)
+  args.push('-v', `${resolvedWorkspace}:/src:ro`);
 
   if (rulesPath) {
     const resolvedRules = path.resolve(rulesPath);
     args.push('-v', `${resolvedRules}:/rules:ro`);
+  }
+
+  // Additional read-only mounts (e.g. Trivy DB)
+  if (extraMounts) {
+    for (const m of extraMounts) {
+      const resolved = path.resolve(m.source);
+      const mode = m.readonly ?? true ? 'ro' : 'rw';
+      args.push('-v', `${resolved}:${m.target}:${mode}`);
+    }
   }
 
   args.push('-w', '/src');
@@ -149,6 +203,9 @@ export async function runDockerScanner(
     timeoutMs = env.SEMGREP_TIMEOUT_MS,
     memoryLimit = env.SEMGREP_MEMORY_LIMIT,
     maxStdoutBytes = env.MAX_SCANNER_STDOUT_BYTES,
+    homeTmpfs,
+    extraEnv,
+    extraMounts,
   } = options;
 
   const containerName = `saferepo-scan-${scanId}-${scannerName}`;
@@ -161,6 +218,9 @@ export async function runDockerScanner(
     image,
     memoryLimit,
     commandArgs,
+    homeTmpfs,
+    extraEnv,
+    extraMounts,
   });
 
   logger.info(
