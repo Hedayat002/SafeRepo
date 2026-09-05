@@ -585,6 +585,88 @@ describe('GET /api/v1/scans/:id/findings', () => {
       const bodyBadScanner = await resBadScanner.json();
       expect(bodyBadScanner.error.code).toBe('VALIDATION_ERROR');
     });
+
+    it('Phase 05: queries findings with category=secret and scanner=gitleaks', async () => {
+      const user = await User.create({
+        githubId: 'secret-api-user',
+        username: 'secretUser',
+      });
+
+      const scan = await Scan.create({
+        userId: user._id,
+        repositoryOwner: 'secretUser',
+        repositoryName: 'secret-api-repo',
+        repositoryUrl: 'https://github.com/secretUser/secret-api-repo',
+        branch: 'main',
+        status: 'completed',
+        scanners: ['semgrep', 'gitleaks'],
+      });
+
+      const sessionId = await createSession(user._id.toString(), 'tokenSecretApi');
+      vi.spyOn(sessionModule, 'getSessionIdFromCookies').mockResolvedValue(sessionId);
+
+      // Create a secret finding and a sast finding
+      await Finding.create([
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'gitleaks',
+          category: 'secret',
+          severity: 'critical',
+          title: 'Secret detected: AWS Access Key ID',
+          description: 'AWS Access Key ID detected in source code.',
+          file: 'src/config.ts',
+          line: 14,
+          column: 1,
+          codeSnippet: '[REDACTED SECRET]',
+          vulnerabilityId: 'aws-access-key-id',
+          fingerprint: 'fp-secret-api-test-1',
+          metadata: {
+            ruleId: 'aws-access-key-id',
+            secretType: 'AWS Access Key ID',
+            scanners: ['gitleaks'],
+          },
+        },
+        {
+          scanId: scan._id,
+          userId: user._id,
+          scanner: 'semgrep',
+          category: 'sast',
+          severity: 'high',
+          title: 'SQL Injection',
+          description: 'SQL injection',
+          file: 'src/db.ts',
+          line: 20,
+          vulnerabilityId: 'sql-i',
+          fingerprint: 'fp-sast-api-test-1',
+        },
+      ]);
+
+      // 1. Filter by category=secret
+      const reqCat = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?category=secret`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const resCat = await GET(reqCat, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resCat.status).toBe(200);
+      const bodyCat = await resCat.json();
+      expect(bodyCat.data).toHaveLength(1);
+      expect(bodyCat.data[0].category).toBe('secret');
+      expect(bodyCat.data[0].scanner).toBe('gitleaks');
+      expect(bodyCat.data[0].codeSnippet).toBe('[REDACTED SECRET]');
+
+      // 2. Filter by scanner=gitleaks
+      const reqScan = new NextRequest(
+        `http://localhost:3000/api/v1/scans/${scan._id}/findings?scanner=gitleaks`,
+        { headers: { cookie: `saferepo_session=${sessionId}` } }
+      );
+      const resScan = await GET(reqScan, { params: Promise.resolve({ id: scan._id.toString() }) });
+      expect(resScan.status).toBe(200);
+      const bodyScan = await resScan.json();
+      expect(bodyScan.data).toHaveLength(1);
+      expect(bodyScan.data[0].scanner).toBe('gitleaks');
+    });
   });
 });
+
 

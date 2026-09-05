@@ -137,3 +137,19 @@
   - (-) Slightly more complex than stateless JWT
 - **Supersedes:** TBD item in REQUIREMENTS.md Section 6
 - **Reference:** docs/SYSTEM_ARCHITECTURE.md (Section 5), docs/REQUIREMENTS.md (Section 6)
+
+---
+
+### 2026-09-05 — Phase 05: Secret Scanning Redaction & Zero Raw Secret Persistence
+
+- **Context:** Secret scanning identifies credentials and keys. Logging or storing plaintext secrets introduces critical exposure risks.
+- **Decision:**
+  - Pinned scanner image `zricethezav/gitleaks:v8.24.0` running in Stage 1 Docker isolation (`--network=none`, `--read-only`, tmpfs, unprivileged user `1000:1000`, dropped capabilities).
+  - Explicit process-boundary redaction flags: `dir /src --report-format json --report-path - --redact --no-banner --no-color`.
+  - Process stdout and stderr treated as sensitive: zero logging of stdout/stderr, zero persistence of raw Gitleaks JSON, in-memory parsing only, sanitized error metadata.
+  - Normalization scrubbing: `codeSnippet` set strictly to `[REDACTED SECRET]`, metadata scrubbed of `Secret` and `Match` attributes.
+  - Exit code semantics: Exit code 0 (no leaks) and 1 (leaks detected) are both normal success completions; exit code >1 represents scanner failure.
+  - Deterministic fingerprinting: SHA-256 of `RuleID:file:StartLine:EndLine`.
+- **Status:** Approved & Implemented.
+- **Reference:** docs/PHASES/PHASE_05.md, docs/SYSTEM_ARCHITECTURE.md (Section 5)
+

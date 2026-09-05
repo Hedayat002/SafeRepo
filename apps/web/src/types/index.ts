@@ -247,6 +247,57 @@ export interface EcosystemDetectionResult {
   };
 }
 
+/** Raw Gitleaks finding structure from JSON report output */
+export interface GitleaksRawFinding {
+  Description?: string;
+  StartLine?: number;
+  EndLine?: number;
+  StartColumn?: number;
+  EndColumn?: number;
+  Match?: string;
+  Secret?: string;
+  File?: string;
+  SymlinkFile?: string;
+  Commit?: string;
+  Entropy?: number;
+  Author?: string;
+  Email?: string;
+  Date?: string;
+  Message?: string;
+  Tags?: string[];
+  RuleID?: string;
+  Fingerprint?: string;
+  [key: string]: unknown;
+}
+
+/** Normalized Gitleaks finding structure (strictly redacted) */
+export interface GitleaksSecretFinding {
+  ruleId: string;
+  secretType: string;
+  file: string;
+  line: number;
+  endLine?: number;
+  column?: number;
+  endColumn?: number;
+  severity: FindingSeverity;
+  title: string;
+  description: string;
+  codeSnippet: string;
+  remediation: string;
+  fingerprint: string;
+  metadata: {
+    ruleId: string;
+    secretType: string;
+    entropy?: number;
+    commit?: string;
+    author?: string;
+    date?: string;
+    tags?: string[];
+    scanners: string[];
+    [key: string]: unknown;
+  };
+}
+
 /** Discriminated union for scanner execution results */
 export interface BaseScannerResult {
   scanner: FindingScanner;
@@ -261,7 +312,7 @@ export interface ScannerSuccessResult<T = unknown> extends BaseScannerResult {
 
 export interface ScannerUnavailableResult extends BaseScannerResult {
   status: 'unavailable';
-  scanner: 'trivy';
+  scanner: 'trivy' | 'gitleaks';
   reason: string;
 }
 
@@ -275,4 +326,5 @@ export type ScannerResult<T = unknown> =
   | ScannerSuccessResult<T>
   | ScannerUnavailableResult
   | ScannerFailedResult;
+
 

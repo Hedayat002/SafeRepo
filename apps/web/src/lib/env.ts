@@ -63,6 +63,13 @@ const envSchema = z.object({
     .number()
     .positive()
     .default(30_000), // 30 seconds
+  // Phase 05: Gitleaks
+  GITLEAKS_IMAGE: z.string().default('zricethezav/gitleaks:v8.24.0'),
+  GITLEAKS_TIMEOUT_MS: z.coerce
+    .number()
+    .positive()
+    .default(180_000), // 180 seconds
+  GITLEAKS_MEMORY_LIMIT: z.string().default('512m'),
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
@@ -100,6 +107,9 @@ function loadEnv(): Env {
       TRIVY_DB_PATH: process.env.TRIVY_DB_PATH,
       OSV_API_URL: process.env.OSV_API_URL ?? 'https://api.osv.dev/v1/querybatch',
       OSV_TIMEOUT_MS: Number(process.env.OSV_TIMEOUT_MS) || 30_000,
+      GITLEAKS_IMAGE: process.env.GITLEAKS_IMAGE ?? 'zricethezav/gitleaks:v8.24.0',
+      GITLEAKS_TIMEOUT_MS: Number(process.env.GITLEAKS_TIMEOUT_MS) || 180_000,
+      GITLEAKS_MEMORY_LIMIT: process.env.GITLEAKS_MEMORY_LIMIT ?? '512m',
       NODE_ENV: 'test',
     };
   }

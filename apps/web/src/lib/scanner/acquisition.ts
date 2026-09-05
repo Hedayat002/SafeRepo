@@ -8,6 +8,7 @@ import { executeSemgrepScan } from './semgrep';
 import { detectEcosystems } from './ecosystem';
 import { executeTrivyScan, type TrivyVulnerabilityFinding } from './trivy';
 import { executeOsvScan, type OsvVulnerabilityFinding } from './osv';
+import { executeGitleaksScan } from './gitleaks';
 import {
   normalizeDependencyFindings,
   type NormalizedFindingInput,
@@ -20,14 +21,14 @@ import type { FindingScanner, ScanSummary } from '@/types';
 /**
  * Safe Repository Acquisition & Multi-Scanner Orchestration Engine.
  *
- * Implements FR-05, FR-06, FR-07, FR-09, FR-12, NFR-02, NFR-03:
+ * Implements FR-05, FR-06, FR-07, FR-08, FR-09, FR-12, FR-13, NFR-02, NFR-03:
  * - Safely clones untrusted repositories with strict hardening.
  * - Enforces `-c core.hooksPath=/dev/null` to neutralize malicious git hooks.
  * - Uses `--depth 1` and `--single-branch` for shallow clone.
  * - Traverses and validates all symlinks to prevent directory traversal escapes.
  * - Enforces size limits (`MAX_REPO_SIZE_MB`).
  * - Detects dependency ecosystems and extracts coordinates statically without executing code.
- * - Orchestrates fault-isolated execution of Semgrep, Trivy, and OSV scanners.
+ * - Orchestrates fault-isolated execution of Semgrep, Trivy, OSV, and Gitleaks scanners.
  * - Normalizes and deduplicates findings cross-scanner using deterministic SHA-256 fingerprints.
  * - Aggregates scan summary severity metrics and persists findings in MongoDB.
  * - Unconditionally cleans up ephemeral workspace in finally block.
@@ -269,6 +270,7 @@ export async function processScanPipeline(
     let semgrepFindings: NormalizedFindingInput[] = [];
     let trivyFindings: TrivyVulnerabilityFinding[] = [];
     let osvFindings: OsvVulnerabilityFinding[] = [];
+    let gitleaksFindings: NormalizedFindingInput[] = [];
 
     // --- Scanner 1: Semgrep SAST ---
     try {
@@ -387,6 +389,44 @@ export async function processScanPipeline(
       warnings.push(`Warning: OSV query failed (${errorMsg})`);
     }
 
+    // --- Scanner 4: Gitleaks Secret Scanner ---
+    try {
+      const gitleaksResult = await executeGitleaksScan({
+        scanId,
+        userId: scan.userId.toString(),
+        workspacePath,
+      });
+
+      if (gitleaksResult.status === 'success') {
+        successfulScanners.push('gitleaks');
+        gitleaksFindings = gitleaksResult.findings;
+      } else if (gitleaksResult.status === 'failed') {
+        const error = sanitizeErrorMessage(gitleaksResult.error);
+        logger.error({ scanId, error }, 'Gitleaks scan failed');
+        scannerErrors.push({
+          scanner: 'gitleaks',
+          status: 'failed',
+          error,
+        });
+        warnings.push(`Warning: Gitleaks scan failed (${error})`);
+      }
+    } catch (err) {
+      const isTimeout =
+        err instanceof ScannerTimeoutError ||
+        (err instanceof Error && err.message.includes('timed out'));
+      if (isTimeout) {
+        throw err;
+      }
+      const errorMsg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
+      logger.error({ scanId, err: errorMsg }, 'Gitleaks scan encountered unexpected error');
+      scannerErrors.push({
+        scanner: 'gitleaks',
+        status: 'failed',
+        error: errorMsg,
+      });
+      warnings.push(`Warning: Gitleaks scan failed (${errorMsg})`);
+    }
+
     // 4. Normalization, Deduplication & Aggregation
     scan.status = 'normalizing';
     await scan.save();
@@ -400,7 +440,7 @@ export async function processScanPipeline(
       dependencyFindings = depNormResult.findings;
     }
 
-    const allFindings = [...semgrepFindings, ...dependencyFindings];
+    const allFindings = [...semgrepFindings, ...dependencyFindings, ...gitleaksFindings];
 
     const summary: ScanSummary = {
       total: allFindings.length,

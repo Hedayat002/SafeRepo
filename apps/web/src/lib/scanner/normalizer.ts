@@ -4,6 +4,7 @@ import type {
   FindingCategory,
   FindingScanner,
   FindingSeverity,
+  GitleaksRawFinding,
   ScanSummary,
   SemgrepRawMatch,
   SemgrepRawOutput,
@@ -848,3 +849,253 @@ export function normalizeDependencyFindings(
     dedupedCount: deduped.length,
   };
 }
+
+// ============================================================================
+// Phase 05: Secret Scanning Normalization & Strict Redaction
+// ============================================================================
+
+/**
+ * Generates a deterministic SHA-256 deduplication fingerprint for secret findings.
+ *
+ * Normalization Rules:
+ * - Rule ID: trimmed, lowercased (fallback: 'generic-secret').
+ * - File path: container prefix (/src/) stripped, backslashes to slashes, trimmed, lowercased.
+ * - Line & Column: integer >= 0 (defaults to 0 if invalid).
+ *
+ * Security Invariants:
+ * - MUST NEVER contain plaintext secret values, raw Match, or code snippets.
+ * - Namespaced with 'secret:' prefix to prevent collisions with SAST or dependency findings.
+ */
+export function generateSecretFingerprint(
+  ruleId: string,
+  filePath: string,
+  line: number,
+  column = 0
+): string {
+  const normalizedRule = (ruleId || 'generic-secret').trim().toLowerCase();
+  const normalizedFile = normalizeFilePath(filePath || '').trim().toLowerCase();
+  const safeLine = Math.max(0, Math.floor(Number(line) || 0));
+  const safeCol = Math.max(0, Math.floor(Number(column) || 0));
+
+  const raw = `secret:${normalizedRule}:${normalizedFile}:${safeLine}:${safeCol}`;
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+/**
+ * Maps Gitleaks rule IDs and tags to SafeRepo's 5-level severity model.
+ * Deterministic rule-based mapping:
+ * - Critical: Private keys, cloud admin credentials, database connection strings, auth tokens.
+ * - High: Developer VCS tokens, collaboration tokens, transactional keys, hardcoded passwords, fallback.
+ * - Medium: Generic webhooks, client-side / publishable keys.
+ * - Low: High-entropy strings without confirmed signatures.
+ * - Info: Example / mock / test credential tokens.
+ */
+export function mapSecretSeverity(
+  ruleId?: string | null,
+  tags: string[] = []
+): FindingSeverity {
+  const normalizedRule = (ruleId || '').trim().toLowerCase();
+  const normalizedTags = tags
+    .filter((t): t is string => typeof t === 'string')
+    .map((t) => t.trim().toLowerCase());
+
+  // 1. Critical Severity
+  const isPrivateKey =
+    /(^|-)(private-key|jwt-secret)($|-)/.test(normalizedRule) ||
+    /^(rsa|ssh|pgp|dsa|ec|openssh|putty)-private-key$/.test(normalizedRule);
+
+  const isCloudRoot =
+    /^(aws-.*|gcp-.*|azure-.*|digitalocean-.*|linode-.*)$/.test(normalizedRule);
+
+  const isDatabaseUri =
+    /^(mongodb|postgres|postgresql|mysql|redis)-uri|database-password$/.test(normalizedRule);
+
+  const isHighPrivAuth =
+    /^(stripe-secret-key|okta-api-token|vault-token|auth0-secret)$/.test(normalizedRule);
+
+  const hasCriticalTag = normalizedTags.some((t) =>
+    ['key', 'private-key', 'crypto', 'cloud', 'infrastructure', 'database', 'payment'].includes(t)
+  );
+
+  if (isPrivateKey || isCloudRoot || isDatabaseUri || isHighPrivAuth || hasCriticalTag) {
+    return 'critical';
+  }
+
+  // 2. Medium Severity
+  const isWebhook =
+    /^(generic-webhook|incoming-webhook)$/.test(normalizedRule);
+
+  const isPublishableOrClient =
+    /^(stripe-publishable-key|firebase-api-key|google-maps-api-key|mapbox-api-key|sentry-dsn)$/.test(normalizedRule);
+
+  const hasMediumTag = normalizedTags.some((t) =>
+    ['publishable', 'client-side', 'dsn', 'webhook'].includes(t)
+  );
+
+  if (isWebhook || isPublishableOrClient || hasMediumTag) {
+    return 'medium';
+  }
+
+  // 3. Low Severity
+  if (/^(generic-high-entropy-string|entropy-match)$/.test(normalizedRule)) {
+    return 'low';
+  }
+
+  // 4. Info Severity
+  if (/^(example-token|test-credential|mock-secret)$/.test(normalizedRule)) {
+    return 'info';
+  }
+
+  // 5. Deterministic Fallback: any other detected credential is High
+  return 'high';
+}
+
+/**
+ * Normalizes a single raw Gitleaks finding into SafeRepo's unified finding schema.
+ *
+ * Strict Zero-Plaintext Invariant:
+ * - raw.Secret is NEVER placed on the finding object.
+ * - raw.Match is NEVER placed on the finding object.
+ * - codeSnippet is set to '[REDACTED SECRET]'.
+ * - description and title are descriptive only and contain no secret content.
+ * - metadata contains only safe operational metadata (ruleId, secretType, entropy, commit, author, date, tags, scanners).
+ */
+export function normalizeGitleaksFinding(
+  scanId: string,
+  userId: string,
+  raw: GitleaksRawFinding
+): NormalizedFindingInput {
+  const ruleId = (raw.RuleID || 'generic-secret').trim();
+  const secretType = (raw.Description || raw.RuleID || 'Hardcoded Secret').trim();
+  const file = normalizeFilePath(raw.File || '');
+  const line = Math.max(0, Math.floor(Number(raw.StartLine) || 0));
+  const endLine =
+    raw.EndLine !== undefined ? Math.max(0, Math.floor(Number(raw.EndLine) || 0)) : undefined;
+  const column = Math.max(0, Math.floor(Number(raw.StartColumn) || 0));
+  const endColumn =
+    raw.EndColumn !== undefined ? Math.max(0, Math.floor(Number(raw.EndColumn) || 0)) : undefined;
+
+  const tags = Array.isArray(raw.Tags)
+    ? raw.Tags.filter((t): t is string => typeof t === 'string').map((t) => t.trim())
+    : [];
+
+  const severity = mapSecretSeverity(ruleId, tags);
+  const fingerprint = generateSecretFingerprint(ruleId, file, line, column);
+
+  const title = `Secret detected: ${secretType}`;
+  const description = `${secretType} detected in source code.`;
+  const remediation =
+    'Revoke and rotate this credential immediately. Remove the secret from source code and git history.';
+
+  return {
+    scanId,
+    userId,
+    scanner: 'gitleaks',
+    category: 'secret',
+    severity,
+    title,
+    description,
+    file,
+    line,
+    endLine,
+    column,
+    endColumn,
+    codeSnippet: '[REDACTED SECRET]',
+    vulnerabilityId: ruleId,
+    remediation,
+    fingerprint,
+    metadata: {
+      ruleId,
+      secretType,
+      entropy: typeof raw.Entropy === 'number' ? raw.Entropy : undefined,
+      commit: typeof raw.Commit === 'string' ? raw.Commit.trim() : undefined,
+      author: typeof raw.Author === 'string' ? raw.Author.trim() : undefined,
+      date: typeof raw.Date === 'string' ? raw.Date.trim() : undefined,
+      tags,
+      scanners: ['gitleaks'],
+    },
+  };
+}
+
+/**
+ * Deduplicates secret findings by fingerprint using an in-memory Map.
+ */
+export function deduplicateSecretFindings(
+  findings: NormalizedFindingInput[]
+): NormalizedFindingInput[] {
+  const map = new Map<string, NormalizedFindingInput>();
+
+  for (const finding of findings) {
+    if (!map.has(finding.fingerprint)) {
+      map.set(finding.fingerprint, {
+        ...finding,
+        metadata: {
+          ...finding.metadata,
+          scanners: ['gitleaks'],
+        },
+      });
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+/**
+ * Normalizes raw Gitleaks output into SafeRepo's unified finding schema.
+ * Handles either JSON string or pre-parsed GitleaksRawFinding array.
+ */
+export function normalizeGitleaksOutput(
+  scanId: string,
+  userId: string,
+  rawOutput: GitleaksRawFinding[] | string,
+  maxFindings = 5000
+): NormalizationResult {
+  let items: GitleaksRawFinding[];
+
+  if (typeof rawOutput === 'string') {
+    const trimmed = rawOutput.trim();
+    if (!trimmed) {
+      items = [];
+    } else {
+      try {
+        const parsed = JSON.parse(trimmed);
+        items = Array.isArray(parsed) ? (parsed as GitleaksRawFinding[]) : [];
+      } catch {
+        throw new Error('Failed to parse Gitleaks output: Invalid JSON structure');
+      }
+    }
+  } else if (Array.isArray(rawOutput)) {
+    items = rawOutput;
+  } else {
+    items = [];
+  }
+
+  const normalizedList: NormalizedFindingInput[] = [];
+  for (const item of items) {
+    if (normalizedList.length >= maxFindings) break;
+    normalizedList.push(normalizeGitleaksFinding(scanId, userId, item));
+  }
+
+  const deduped = deduplicateSecretFindings(normalizedList);
+
+  const summary: ScanSummary = {
+    total: deduped.length,
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    info: 0,
+  };
+
+  for (const f of deduped) {
+    summary[f.severity]++;
+  }
+
+  return {
+    findings: deduped,
+    summary,
+    rawMatchesCount: items.length,
+    dedupedCount: deduped.length,
+  };
+}
+

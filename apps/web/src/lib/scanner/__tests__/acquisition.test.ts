@@ -24,6 +24,7 @@ import * as semgrepModule from '../semgrep';
 import * as ecosystemModule from '../ecosystem';
 import * as trivyModule from '../trivy';
 import * as osvModule from '../osv';
+import * as gitleaksModule from '../gitleaks';
 import { ScannerTimeoutError } from '../runner';
 
 const mockSpawn = vi.mocked(spawn);
@@ -149,6 +150,14 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
     vi.spyOn(osvModule, 'executeOsvScan').mockResolvedValue({
       status: 'success',
       scanner: 'osv',
+      findings: [],
+      durationMs: 300,
+      rawMatchesCount: 0,
+    });
+
+    vi.spyOn(gitleaksModule, 'executeGitleaksScan').mockResolvedValue({
+      status: 'success',
+      scanner: 'gitleaks',
       findings: [],
       durationMs: 300,
       rawMatchesCount: 0,
@@ -394,7 +403,7 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
 
       const updated = await Scan.findById(scan._id);
       expect(updated?.status).toBe('completed');
-      expect(updated?.scanners).toEqual(['semgrep', 'trivy', 'osv']);
+      expect(updated?.scanners).toEqual(['semgrep', 'trivy', 'osv', 'gitleaks']);
       expect(updated?.error).toBeNull();
       expect(updated?.summary.total).toBe(3);
       expect(updated?.summary.high).toBe(2);
@@ -486,7 +495,7 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
 
       const updated = await Scan.findById(scan._id);
       expect(updated?.status).toBe('completed');
-      expect(updated?.scanners).toEqual(['semgrep', 'osv']); // 'trivy' strictly excluded
+      expect(updated?.scanners).toEqual(['semgrep', 'osv', 'gitleaks']); // 'trivy' strictly excluded
       expect(updated?.error).toContain('Warning: Trivy unavailable');
       expect(updated?.summary.total).toBe(2);
       expect(updated?.summary.critical).toBe(1);
@@ -552,7 +561,7 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
 
       const updated = await Scan.findById(scan._id);
       expect(updated?.status).toBe('completed');
-      expect(updated?.scanners).toEqual(['semgrep', 'trivy']); // 'osv' strictly excluded
+      expect(updated?.scanners).toEqual(['semgrep', 'trivy', 'gitleaks']); // 'osv' strictly excluded
       expect(updated?.error).toContain('Warning: OSV query failed');
       expect(updated?.summary.total).toBe(1);
 
@@ -622,7 +631,7 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
 
       const updated = await Scan.findById(scan._id);
       expect(updated?.status).toBe('completed');
-      expect(updated?.scanners).toEqual(['semgrep']);
+      expect(updated?.scanners).toEqual(['semgrep', 'gitleaks']);
       expect(updated?.error).toContain('Warning: Trivy unavailable');
       expect(updated?.error).toContain('Warning: OSV query failed');
       expect(updated?.summary.total).toBe(1);
@@ -679,7 +688,7 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
 
       const updated = await Scan.findById(scan._id);
       expect(updated?.status).toBe('completed');
-      expect(updated?.scanners).toEqual(['semgrep', 'trivy', 'osv']);
+      expect(updated?.scanners).toEqual(['semgrep', 'trivy', 'osv', 'gitleaks']);
       expect(updated?.summary.total).toBe(0);
       expect(updated?.error).toBeNull();
     });
@@ -891,7 +900,7 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
       expect(updated?.status).toBe('completed');
       // Crucial: Trivy MUST NOT be in scanners array
       expect(updated?.scanners).not.toContain('trivy');
-      expect(updated?.scanners).toEqual(['semgrep', 'osv']);
+      expect(updated?.scanners).toEqual(['semgrep', 'osv', 'gitleaks']);
       // Crucial: Must have explicit warning
       expect(updated?.error).toContain('Warning: Trivy unavailable');
     });
@@ -925,6 +934,11 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
         status: 'failed',
         scanner: 'osv',
         error: 'OSV network down',
+      });
+      vi.spyOn(gitleaksModule, 'executeGitleaksScan').mockResolvedValue({
+        status: 'failed',
+        scanner: 'gitleaks',
+        error: 'Gitleaks crash',
       });
 
       await processScanPipeline(scan._id.toString(), 'token123');
@@ -1085,6 +1099,127 @@ describe('Repository Acquisition & Pipeline (Phase 04 — Gate 5 Integration)', 
 
       const count = await Finding.countDocuments({ scanId: scan._id });
       expect(count).toBe(550);
+    });
+
+    it('Phase 05: Gitleaks discovers secrets -> persisted with strict redaction and summary updated', async () => {
+      const scan = await Scan.create({
+        userId,
+        repositoryOwner: 'secret-org',
+        repositoryName: 'secret-repo',
+        repositoryUrl: 'https://github.com/secret-org/secret-repo',
+        branch: 'main',
+        status: 'queued',
+      });
+
+      setupGitSpawnMock();
+
+      const fakeSecret = 'fake-secret-token-xyz-123456789';
+
+      vi.spyOn(gitleaksModule, 'executeGitleaksScan').mockResolvedValue({
+        status: 'success',
+        scanner: 'gitleaks',
+        findings: [
+          {
+            scanId: scan._id.toString(),
+            userId: userId.toString(),
+            scanner: 'gitleaks',
+            category: 'secret',
+            severity: 'critical',
+            title: 'Secret detected: AWS Access Key ID',
+            description: 'AWS Access Key ID detected in source code.',
+            file: 'src/aws.ts',
+            line: 12,
+            column: 1,
+            codeSnippet: '[REDACTED SECRET]',
+            vulnerabilityId: 'aws-access-key-id',
+            remediation: 'Revoke and rotate this credential immediately.',
+            fingerprint: 'fp-secret-aws-1',
+            metadata: {
+              ruleId: 'aws-access-key-id',
+              secretType: 'AWS Access Key ID',
+              scanners: ['gitleaks'],
+            },
+          },
+        ],
+        durationMs: 400,
+        rawMatchesCount: 1,
+      });
+
+      await processScanPipeline(scan._id.toString(), 'token123');
+
+      const updatedScan = await Scan.findById(scan._id);
+      expect(updatedScan?.status).toBe('completed');
+      expect(updatedScan?.scanners).toContain('gitleaks');
+      expect(updatedScan?.summary.critical).toBe(1);
+      expect(updatedScan?.summary.total).toBe(1);
+
+      const findings = await Finding.find({ scanId: scan._id }).lean();
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.category).toBe('secret');
+      expect(findings[0]?.scanner).toBe('gitleaks');
+      expect(findings[0]?.severity).toBe('critical');
+      expect(findings[0]?.codeSnippet).toBe('[REDACTED SECRET]');
+
+      // Strict Redaction in persisted MongoDB document:
+      expect(JSON.stringify(findings[0])).not.toContain(fakeSecret);
+    });
+
+    it('Phase 05: Gitleaks failure preserves Semgrep, Trivy, and OSV findings (fault isolation)', async () => {
+      const scan = await Scan.create({
+        userId,
+        repositoryOwner: 'fail-gitleaks-org',
+        repositoryName: 'fail-gitleaks-repo',
+        repositoryUrl: 'https://github.com/fail-gitleaks-org/fail-gitleaks-repo',
+        branch: 'main',
+        status: 'queued',
+      });
+
+      setupGitSpawnMock();
+
+      vi.spyOn(semgrepModule, 'executeSemgrepScan').mockResolvedValue({
+        rawStdoutLength: 100,
+        normalization: {
+          findings: [
+            {
+              scanId: scan._id.toString(),
+              userId: userId.toString(),
+              scanner: 'semgrep',
+              category: 'sast',
+              severity: 'medium',
+              title: 'XSS in View',
+              description: 'Cross-site scripting',
+              file: 'src/view.ts',
+              line: 10,
+              vulnerabilityId: 'xss',
+              fingerprint: 'fp-semgrep-xss',
+            },
+          ],
+          summary: { total: 1, critical: 0, high: 0, medium: 1, low: 0, info: 0 },
+          rawMatchesCount: 1,
+          dedupedCount: 1,
+        },
+        durationMs: 500,
+      });
+
+      vi.spyOn(gitleaksModule, 'executeGitleaksScan').mockResolvedValue({
+        status: 'failed',
+        scanner: 'gitleaks',
+        error: 'Gitleaks container crashed',
+        durationMs: 200,
+      });
+
+      await processScanPipeline(scan._id.toString(), 'token123');
+
+      const updatedScan = await Scan.findById(scan._id);
+      expect(updatedScan?.status).toBe('completed');
+      expect(updatedScan?.scanners).toContain('semgrep');
+      expect(updatedScan?.scanners).not.toContain('gitleaks');
+      expect(updatedScan?.error).toContain('Warning: Gitleaks scan failed');
+      expect(updatedScan?.summary.total).toBe(1);
+
+      const findings = await Finding.find({ scanId: scan._id });
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.scanner).toBe('semgrep');
     });
 
     it('exports processScanAcquisition as an alias', () => {

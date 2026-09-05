@@ -17,10 +17,15 @@ import {
   normalizeTrivyOutput,
   normalizeOsvOutput,
   normalizeDependencyFindings,
+  generateSecretFingerprint,
+  mapSecretSeverity,
+  normalizeGitleaksFinding,
+  deduplicateSecretFindings,
+  normalizeGitleaksOutput,
   SEVERITY_RANK,
   type NormalizedFindingInput,
 } from '../normalizer';
-import type { SemgrepRawOutput } from '@/types';
+import type { GitleaksRawFinding, SemgrepRawOutput } from '@/types';
 import type { TrivyVulnerabilityFinding } from '../trivy';
 import type { OsvVulnerabilityFinding } from '../osv';
 
@@ -940,4 +945,262 @@ describe('Result Normalizer', () => {
       expect(fp).toHaveLength(64);
     });
   });
+
+  // ==========================================================================
+  // Phase 05: Secret Scanning Normalization & Strict Redaction Tests
+  // ==========================================================================
+
+  describe('Phase 05: Secret Scanning (Gitleaks)', () => {
+    const fakeSecret = 'fake-secret-token-xyz-123456789';
+    const fakeMatch = `const AWS_KEY = "${fakeSecret}";`;
+
+    describe('generateSecretFingerprint', () => {
+      it('generates deterministic 64-character SHA-256 hash', () => {
+        const fp1 = generateSecretFingerprint('aws-access-key-id', 'src/config.ts', 15, 1);
+        const fp2 = generateSecretFingerprint('aws-access-key-id', 'src/config.ts', 15, 1);
+
+        expect(fp1).toHaveLength(64);
+        expect(fp1).toBe(fp2);
+      });
+
+      it('normalizes case, slashes, and whitespace', () => {
+        const fp1 = generateSecretFingerprint('AWS-ACCESS-KEY-ID', '/src/config.ts', 15, 1);
+        const fp2 = generateSecretFingerprint('aws-access-key-id', 'config.ts', 15, 1);
+
+        expect(fp1).toBe(fp2);
+      });
+
+      it('handles missing or invalid location values safely (defaults to 0)', () => {
+        const fp1 = generateSecretFingerprint('generic-secret', '', Number.NaN, Number.NaN);
+        const fp2 = generateSecretFingerprint('generic-secret', '', 0, 0);
+
+        expect(fp1).toBe(fp2);
+      });
+
+      it('strictly NEVER includes the secret value, Match, or code snippet', () => {
+        const fpWithoutSecret = generateSecretFingerprint('aws-access-key-id', 'src/config.ts', 10, 1);
+
+        // Verification: raw string hashed does not contain fakeSecret
+        const rawHashed = `secret:aws-access-key-id:src/config.ts:10:1`;
+        const expected = crypto.createHash('sha256').update(rawHashed).digest('hex');
+
+        expect(fpWithoutSecret).toBe(expected);
+      });
+    });
+
+    describe('mapSecretSeverity', () => {
+      it('maps cryptographic private keys to critical', () => {
+        expect(mapSecretSeverity('rsa-private-key')).toBe('critical');
+        expect(mapSecretSeverity('ssh-private-key')).toBe('critical');
+        expect(mapSecretSeverity('jwt-secret')).toBe('critical');
+        expect(mapSecretSeverity('some-key', ['crypto'])).toBe('critical');
+        expect(mapSecretSeverity('some-key', ['private-key'])).toBe('critical');
+      });
+
+      it('maps cloud provider admin credentials to critical', () => {
+        expect(mapSecretSeverity('aws-access-token')).toBe('critical');
+        expect(mapSecretSeverity('aws-secret-access-key')).toBe('critical');
+        expect(mapSecretSeverity('gcp-service-account-key')).toBe('critical');
+        expect(mapSecretSeverity('azure-client-secret')).toBe('critical');
+        expect(mapSecretSeverity('digitalocean-token')).toBe('critical');
+        expect(mapSecretSeverity('custom-cloud', ['cloud'])).toBe('critical');
+      });
+
+      it('maps database connection strings to critical', () => {
+        expect(mapSecretSeverity('mongodb-uri')).toBe('critical');
+        expect(mapSecretSeverity('postgres-uri')).toBe('critical');
+        expect(mapSecretSeverity('mysql-uri')).toBe('critical');
+        expect(mapSecretSeverity('redis-uri')).toBe('critical');
+        expect(mapSecretSeverity('custom-db', ['database'])).toBe('critical');
+      });
+
+      it('maps high-privilege SaaS and payment credentials to critical', () => {
+        expect(mapSecretSeverity('stripe-secret-key')).toBe('critical');
+        expect(mapSecretSeverity('okta-api-token')).toBe('critical');
+        expect(mapSecretSeverity('vault-token')).toBe('critical');
+        expect(mapSecretSeverity('auth0-secret')).toBe('critical');
+        expect(mapSecretSeverity('custom-auth', ['payment'])).toBe('critical');
+      });
+
+      it('maps developer VCS, messaging, and API tokens to high', () => {
+        expect(mapSecretSeverity('github-pat')).toBe('high');
+        expect(mapSecretSeverity('gitlab-pat')).toBe('high');
+        expect(mapSecretSeverity('slack-token')).toBe('high');
+        expect(mapSecretSeverity('discord-bot-token')).toBe('high');
+        expect(mapSecretSeverity('sendgrid-api-key')).toBe('high');
+        expect(mapSecretSeverity('twilio-api-key')).toBe('high');
+        expect(mapSecretSeverity('password-in-url')).toBe('high');
+        expect(mapSecretSeverity('generic-api-key')).toBe('high');
+      });
+
+      it('defaults unmapped / unknown secret rules deterministically to high', () => {
+        expect(mapSecretSeverity('unknown-internal-secret')).toBe('high');
+        expect(mapSecretSeverity('')).toBe('high');
+        expect(mapSecretSeverity(null)).toBe('high');
+      });
+
+      it('maps generic webhooks and publishable/client keys to medium', () => {
+        expect(mapSecretSeverity('generic-webhook')).toBe('medium');
+        expect(mapSecretSeverity('incoming-webhook')).toBe('medium');
+        expect(mapSecretSeverity('stripe-publishable-key')).toBe('medium');
+        expect(mapSecretSeverity('firebase-api-key')).toBe('medium');
+        expect(mapSecretSeverity('google-maps-api-key')).toBe('medium');
+        expect(mapSecretSeverity('sentry-dsn')).toBe('medium');
+        expect(mapSecretSeverity('some-key', ['publishable'])).toBe('medium');
+        expect(mapSecretSeverity('some-key', ['client-side'])).toBe('medium');
+      });
+
+      it('maps generic high-entropy strings to low', () => {
+        expect(mapSecretSeverity('generic-high-entropy-string')).toBe('low');
+        expect(mapSecretSeverity('entropy-match')).toBe('low');
+      });
+
+      it('maps example and test credential tokens to info', () => {
+        expect(mapSecretSeverity('example-token')).toBe('info');
+        expect(mapSecretSeverity('test-credential')).toBe('info');
+        expect(mapSecretSeverity('mock-secret')).toBe('info');
+      });
+    });
+
+    describe('normalizeGitleaksFinding & Strict Redaction', () => {
+      it('redacts all sensitive secret material and sets safe properties', () => {
+        const raw: GitleaksRawFinding = {
+          Description: 'AWS Access Key ID',
+          RuleID: 'aws-access-key-id',
+          Secret: fakeSecret,
+          Match: fakeMatch,
+          File: '/src/config.ts',
+          StartLine: 12,
+          EndLine: 12,
+          StartColumn: 1,
+          EndColumn: 20,
+          Entropy: 3.8,
+          Commit: 'abcdef1234567890',
+          Author: 'developer',
+          Date: '2026-08-01',
+          Tags: ['key', 'AWS'],
+        };
+
+        const finding = normalizeGitleaksFinding('scan-1', 'user-1', raw);
+
+        expect(finding.scanner).toBe('gitleaks');
+        expect(finding.category).toBe('secret');
+        expect(finding.severity).toBe('critical');
+        expect(finding.file).toBe('config.ts');
+        expect(finding.line).toBe(12);
+        expect(finding.column).toBe(1);
+        expect(finding.title).toBe('Secret detected: AWS Access Key ID');
+        expect(finding.description).toBe('AWS Access Key ID detected in source code.');
+        expect(finding.remediation).toContain('Revoke and rotate this credential immediately');
+
+        // STRICT REDACTION ASSERTIONS
+        // 1. Raw secret is absent from entire finding JSON string
+        expect(JSON.stringify(finding)).not.toContain(fakeSecret);
+
+        // 2. codeSnippet is redacted
+        expect(finding.codeSnippet).toBe('[REDACTED SECRET]');
+        expect(finding.codeSnippet).not.toContain(fakeSecret);
+
+        // 3. description contains no secret
+        expect(finding.description).not.toContain(fakeSecret);
+
+        // 4. metadata deletes Secret and Match
+        expect(finding.metadata).not.toHaveProperty('Secret');
+        expect(finding.metadata).not.toHaveProperty('Match');
+        expect(JSON.stringify(finding.metadata)).not.toContain(fakeSecret);
+
+        // 5. metadata preserves safe operational context
+        expect(finding.metadata?.ruleId).toBe('aws-access-key-id');
+        expect(finding.metadata?.secretType).toBe('AWS Access Key ID');
+        expect(finding.metadata?.entropy).toBe(3.8);
+        expect(finding.metadata?.scanners).toEqual(['gitleaks']);
+      });
+
+      it('handles findings with missing optional fields cleanly', () => {
+        const raw: GitleaksRawFinding = {
+          RuleID: 'generic-api-key',
+          File: 'app.js',
+        };
+
+        const finding = normalizeGitleaksFinding('scan-1', 'user-1', raw);
+        expect(finding.line).toBe(0);
+        expect(finding.column).toBe(0);
+        expect(finding.severity).toBe('high');
+        expect(finding.title).toBe('Secret detected: generic-api-key');
+        expect(finding.codeSnippet).toBe('[REDACTED SECRET]');
+      });
+    });
+
+    describe('deduplicateSecretFindings', () => {
+      it('deduplicates identical secret findings by fingerprint', () => {
+        const raw: GitleaksRawFinding = {
+          Description: 'GitHub PAT',
+          RuleID: 'github-pat',
+          Secret: fakeSecret,
+          Match: fakeMatch,
+          File: 'src/token.ts',
+          StartLine: 5,
+        };
+
+        const f1 = normalizeGitleaksFinding('scan-1', 'user-1', raw);
+        const f2 = normalizeGitleaksFinding('scan-1', 'user-1', raw);
+
+        const deduped = deduplicateSecretFindings([f1, f2]);
+        expect(deduped).toHaveLength(1);
+        expect(deduped[0]?.fingerprint).toBe(f1.fingerprint);
+      });
+    });
+
+    describe('normalizeGitleaksOutput', () => {
+      it('normalizes from JSON string and computes correct severity counts', () => {
+        const rawList = [
+          {
+            Description: 'AWS Access Key ID',
+            RuleID: 'aws-access-key-id',
+            Secret: fakeSecret,
+            Match: fakeMatch,
+            File: 'src/aws.ts',
+            StartLine: 10,
+          },
+          {
+            Description: 'Generic Webhook',
+            RuleID: 'generic-webhook',
+            Secret: fakeSecret,
+            Match: fakeMatch,
+            File: 'src/webhook.ts',
+            StartLine: 20,
+          },
+        ];
+
+        const res = normalizeGitleaksOutput('scan-1', 'user-1', JSON.stringify(rawList));
+
+        expect(res.rawMatchesCount).toBe(2);
+        expect(res.dedupedCount).toBe(2);
+        expect(res.summary).toEqual({
+          total: 2,
+          critical: 1, // AWS
+          high: 0,
+          medium: 1, // Webhook
+          low: 0,
+          info: 0,
+        });
+
+        // Zero secret values anywhere in result
+        expect(JSON.stringify(res)).not.toContain(fakeSecret);
+      });
+
+      it('handles empty JSON string or whitespace cleanly', () => {
+        const res = normalizeGitleaksOutput('scan-1', 'user-1', '  ');
+        expect(res.findings).toEqual([]);
+        expect(res.summary.total).toBe(0);
+      });
+
+      it('throws error when JSON string is invalid without leaking raw content', () => {
+        expect(() =>
+          normalizeGitleaksOutput('scan-1', 'user-1', 'not valid json')
+        ).toThrow('Failed to parse Gitleaks output: Invalid JSON structure');
+      });
+    });
+  });
 });
+
