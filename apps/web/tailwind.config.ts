@@ -11,6 +11,13 @@ const config: Config = {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
+        severity: {
+          critical: "#DC2626",
+          high: "#EA580C",
+          medium: "#CA8A04",
+          low: "#2563EB",
+          info: "#6B7280",
+        },
       },
     },
   },

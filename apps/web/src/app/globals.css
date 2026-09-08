@@ -5,12 +5,26 @@
 :root {
   --foreground: #171717;
   --background: #ffffff;
+  --card-background: #ffffff;
+  --card-border: #e5e7eb;
+  --severity-critical: #dc2626;
+  --severity-high: #ea580c;
+  --severity-medium: #ca8a04;
+  --severity-low: #2563eb;
+  --severity-info: #6b7280;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --foreground: #ededed;
     --background: #0a0a0a;
+    --card-background: #111827;
+    --card-border: #1f2937;
+    --severity-critical: #ef4444;
+    --severity-high: #f97316;
+    --severity-medium: #eab308;
+    --severity-low: #3b82f6;
+    --severity-info: #9ca3af;
   }
 }
 
@@ -18,4 +32,11 @@ body {
   color: var(--foreground);
   background: var(--background);
   font-family: inherit;
+}
+
+/* Custom dashboard utility classes */
+@layer utilities {
+  .card-base {
+    @apply rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm;
+  }
 }
