@@ -23,6 +23,10 @@ export interface IScan extends Document {
   startedAt: Date | null;
   completedAt: Date | null;
   duration: number | null;
+  // Phase 06: Worker ownership and heartbeat
+  workerId: string | null;
+  heartbeatAt: Date | null;
+  metadata?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -98,6 +102,19 @@ const scanSchema = new Schema<IScan>(
       type: Number,
       default: null,
     },
+    // Phase 06: Worker ownership and heartbeat
+    workerId: {
+      type: String,
+      default: null,
+    },
+    heartbeatAt: {
+      type: Date,
+      default: null,
+    },
+    metadata: {
+      type: Schema.Types.Mixed,
+      default: {},
+    },
   },
   {
     timestamps: true,
@@ -108,6 +125,8 @@ const scanSchema = new Schema<IScan>(
 // Indexes per DATABASE_DESIGN.md
 scanSchema.index({ repositoryOwner: 1, repositoryName: 1 });
 scanSchema.index({ createdAt: -1 });
+// Phase 06: Compound index for FIFO queue claiming
+scanSchema.index({ status: 1, createdAt: 1 });
 
 export const Scan: Model<IScan> =
   mongoose.models.Scan ?? mongoose.model<IScan>('Scan', scanSchema);

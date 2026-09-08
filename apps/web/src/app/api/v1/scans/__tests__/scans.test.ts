@@ -7,7 +7,6 @@ import { POST as createScanHandler, GET as listScansHandler } from '@/app/api/v1
 import { GET as getScanHandler } from '@/app/api/v1/scans/[id]/route';
 import * as sessionModule from '@/lib/session';
 import * as githubModule from '@/lib/github';
-import * as acquisitionModule from '@/lib/scanner/acquisition';
 import type { GitHubRepository, ScanResponseData } from '@/types';
 
 describe('Scans API Routes', () => {
@@ -136,10 +135,6 @@ describe('Scans API Routes', () => {
         size: 5000,
       } as unknown as GitHubRepository);
 
-      const mockAcquire = vi
-        .spyOn(acquisitionModule, 'processScanAcquisition')
-        .mockResolvedValue(undefined);
-
       const request = new NextRequest('http://localhost:3000/api/v1/scans', {
         method: 'POST',
         body: JSON.stringify({ repositoryOwner: 'org', repositoryName: 'good-repo' }),
@@ -153,11 +148,11 @@ describe('Scans API Routes', () => {
       expect(json.data.status).toBe('queued');
       expect(json.data.repositoryName).toBe('good-repo');
 
-      // Verify created in DB
+      // Verify created in DB with queued status for worker pickup
       const dbScan = await Scan.findById(json.data.id);
       expect(dbScan).not.toBeNull();
       expect(dbScan?.userId.toString()).toBe(user1._id.toString());
-      expect(mockAcquire).toHaveBeenCalledWith(json.data.id, 'token_user_1');
+      expect(dbScan?.status).toBe('queued');
     });
   });
 

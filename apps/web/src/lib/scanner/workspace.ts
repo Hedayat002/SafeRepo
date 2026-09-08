@@ -134,7 +134,7 @@ export async function cleanupOrphanedWorkspaces(maxAgeMs = 3_600_000): Promise<n
         const dirPath = path.join(baseDir, entry.name);
         try {
           const stats = await fs.stat(dirPath);
-          if (now - stats.mtimeMs > maxAgeMs) {
+          if (now - stats.mtimeMs >= maxAgeMs) {
             await fs.rm(dirPath, { recursive: true, force: true });
             cleanedCount++;
             logger.info({ dirPath }, 'Cleaned orphaned workspace');

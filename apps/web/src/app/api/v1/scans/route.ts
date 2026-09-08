@@ -6,8 +6,9 @@ import { Scan } from '@/models/scan';
 import { createScanSchema, scansQuerySchema } from '@/lib/schemas';
 import { formatErrorResponse, ValidationError, NotFoundError } from '@/lib/errors';
 import { checkRateLimit, RATE_LIMITS, applyRateLimitHeaders } from '@/lib/rate-limit';
-import { processScanAcquisition } from '@/lib/scanner/acquisition';
 import { env } from '@/lib/env';
+
+import { enqueueScanJob } from '@/lib/scanner/queue';
 
 /**
  * POST /api/v1/scans
@@ -17,8 +18,9 @@ import { env } from '@/lib/env';
  * - Validates input parameters with Zod.
  * - Verifies repository access with user's GitHub token.
  * - Checks repository size limit against metadata.
- * - Creates scan record with status "queued".
- * - Dispatches safe acquisition asynchronously.
+ * - Creates scan record with status "queued" via in-database queue.
+ * - The trusted worker process polls the MongoDB queue and claims jobs
+ *   via atomic findOneAndUpdate. No in-process fire-and-forget dispatch.
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
@@ -67,20 +69,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     await connectDB();
 
-    // Create Scan document in queued status
-    const scan = await Scan.create({
+    // Create Scan document in queued status via queue manager.
+    // Phase 06: The trusted worker process polls this queue and claims jobs
+    // via atomic findOneAndUpdate. No in-process fire-and-forget dispatch.
+    const scan = await enqueueScanJob({
       userId: user._id,
       repositoryOwner,
       repositoryName,
       repositoryUrl: repoMeta.html_url,
       branch,
-      status: 'queued',
-      summary: { total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
     });
-
-    // Kick off safe acquisition asynchronously (in-process for MVP)
-    // Runs in background without blocking response
-    void processScanAcquisition(scan._id.toString(), githubAccessToken);
 
     const response = NextResponse.json(
       {

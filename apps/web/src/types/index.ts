@@ -328,3 +328,34 @@ export type ScannerResult<T = unknown> =
   | ScannerFailedResult;
 
 
+// ─── Phase 06: Queue, Worker & Orchestrator Types ───
+
+/** Configuration for the scan queue and worker */
+export interface ScanQueueConfig {
+  maxConcurrentScans: number;
+  pollIntervalMs: number;
+  staleTimeoutMs: number;
+  scanTimeoutSeconds: number;
+  heartbeatIntervalMs: number;
+}
+
+/** Result of a single scanner execution within the orchestrator */
+export interface ScannerErrorRecord {
+  scanner: FindingScanner;
+  status: 'unavailable' | 'failed';
+  reason?: string;
+  error?: string;
+}
+
+/** Result returned from the orchestrator after executing all scanners */
+export interface OrchestratorResult {
+  status: 'completed' | 'failed' | 'timed_out';
+  scanners: FindingScanner[];
+  findingsCount: number;
+  summary: ScanSummary;
+  warnings: string[];
+  scannerErrors: ScannerErrorRecord[];
+  error?: string;
+  durationMs: number;
+}
+

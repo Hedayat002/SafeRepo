@@ -70,6 +70,24 @@ const envSchema = z.object({
     .positive()
     .default(180_000), // 180 seconds
   GITLEAKS_MEMORY_LIMIT: z.string().default('512m'),
+  // Phase 06: Queue & Worker
+  MAX_CONCURRENT_SCANS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1),
+  SCAN_QUEUE_POLL_INTERVAL_MS: z.coerce
+    .number()
+    .positive()
+    .default(5_000), // 5 seconds
+  SCAN_STALE_TIMEOUT_MS: z.coerce
+    .number()
+    .positive()
+    .default(360_000), // 360 seconds (6 minutes)
+  SCAN_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .positive()
+    .default(300), // 300 seconds (5 minutes)
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
@@ -110,6 +128,10 @@ function loadEnv(): Env {
       GITLEAKS_IMAGE: process.env.GITLEAKS_IMAGE ?? 'zricethezav/gitleaks:v8.24.0',
       GITLEAKS_TIMEOUT_MS: Number(process.env.GITLEAKS_TIMEOUT_MS) || 180_000,
       GITLEAKS_MEMORY_LIMIT: process.env.GITLEAKS_MEMORY_LIMIT ?? '512m',
+      MAX_CONCURRENT_SCANS: Number(process.env.MAX_CONCURRENT_SCANS) || 1,
+      SCAN_QUEUE_POLL_INTERVAL_MS: Number(process.env.SCAN_QUEUE_POLL_INTERVAL_MS) || 5_000,
+      SCAN_STALE_TIMEOUT_MS: Number(process.env.SCAN_STALE_TIMEOUT_MS) || 360_000,
+      SCAN_TIMEOUT_SECONDS: Number(process.env.SCAN_TIMEOUT_SECONDS) || 300,
       NODE_ENV: 'test',
     };
   }

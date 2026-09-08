@@ -28,7 +28,7 @@ beforeAll(async () => {
     const dockerUri = 'mongodb://admin:password@localhost:27017/saferepo_test?authSource=admin';
     try {
       process.env.MONGODB_URI = dockerUri;
-      await mongoose.connect(dockerUri);
+      await mongoose.connect(dockerUri, { serverSelectionTimeoutMS: 2000 });
     } catch {
       // Fallback: MongoMemoryServer for CI or environments without Docker
       mongoServer = await MongoMemoryServer.create();
