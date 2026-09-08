@@ -35,6 +35,9 @@ jobs:
       - name: Run TypeScript typecheck
         run: npm run typecheck
 
+      - name: Run dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Run tests with coverage
         run: npm run test:coverage
         env:

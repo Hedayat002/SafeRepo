@@ -5,6 +5,7 @@ import { Scan } from '@/models/scan';
 import { Finding } from '@/models/finding';
 import { scanIdParamSchema, findingsQuerySchema } from '@/lib/schemas';
 import { formatErrorResponse, ValidationError, NotFoundError } from '@/lib/errors';
+import { checkRateLimit, applyRateLimitHeaders } from '@/lib/rate-limit';
 
 /**
  * GET /api/v1/scans/:id/findings
@@ -21,6 +22,27 @@ export async function GET(
 ): Promise<NextResponse> {
   try {
     const { user } = await requireAuth();
+
+    // Rate limit: 100 requests per minute per user
+    const rateLimitResult = checkRateLimit(`findings:${user._id.toString()}`, {
+      maxRequests: 100,
+      windowMs: 60 * 1000,
+    });
+
+    if (!rateLimitResult.allowed) {
+      const response = NextResponse.json(
+        {
+          error: {
+            code: 'RATE_LIMIT_EXCEEDED',
+            message: 'Findings query rate limit exceeded. Please retry later.',
+          },
+        },
+        { status: 429 }
+      );
+      applyRateLimitHeaders(response.headers, rateLimitResult);
+      return response;
+    }
+
     const params = await context.params;
 
     // Validate path parameter
@@ -72,7 +94,7 @@ export async function GET(
       Finding.countDocuments(filter),
     ]);
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       data: findings.map((f) => ({
         id: f._id.toString(),
         scanId: f.scanId.toString(),
@@ -103,6 +125,9 @@ export async function GET(
         pages: Math.ceil(totalCount / per_page),
       },
     });
+
+    applyRateLimitHeaders(response.headers, rateLimitResult);
+    return response;
   } catch (err) {
     const { body, status } = formatErrorResponse(err);
     return NextResponse.json(body, { status });

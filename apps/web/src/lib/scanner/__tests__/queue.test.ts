@@ -8,6 +8,7 @@ import {
   updateScanHeartbeat,
   transitionScanStatus,
   reconcileStaleScans,
+  checkAndHandleScanCancellation,
   createScanWorker,
   type ScanWorker,
 } from '../queue';
@@ -307,6 +308,142 @@ describe('Phase 06 — Queue, Worker & Reconciliation Sweeper', () => {
 
       await worker.stop(500);
       expect(worker.isRunning()).toBe(false);
+    });
+  });
+
+  describe('checkAndHandleScanCancellation & Cancellation in Worker', () => {
+    it('cancels active scan when cancelRequested is true', async () => {
+      const scan = await Scan.create({
+        userId,
+        repositoryOwner: 'safe-org',
+        repositoryName: 'cancel-app',
+        repositoryUrl: 'https://github.com/safe-org/cancel-app',
+        branch: 'main',
+        status: 'scanning',
+        workerId: 'worker-cancel-1',
+        cancelRequested: true,
+      });
+
+      const cancelled = await checkAndHandleScanCancellation(scan._id.toString(), 'worker-cancel-1');
+      expect(cancelled).toBe(true);
+
+      const refreshed = await Scan.findById(scan._id);
+      expect(refreshed?.status).toBe('failed');
+      expect(refreshed?.error).toBe('Scan cancelled by user');
+      expect(refreshed?.completedAt).not.toBeNull();
+    });
+
+    it('returns false and leaves scan untouched when cancelRequested is false', async () => {
+      const scan = await Scan.create({
+        userId,
+        repositoryOwner: 'safe-org',
+        repositoryName: 'not-cancelled',
+        repositoryUrl: 'https://github.com/safe-org/not-cancelled',
+        branch: 'main',
+        status: 'scanning',
+        workerId: 'worker-cancel-1',
+        cancelRequested: false,
+      });
+
+      const cancelled = await checkAndHandleScanCancellation(scan._id.toString(), 'worker-cancel-1');
+      expect(cancelled).toBe(false);
+
+      const refreshed = await Scan.findById(scan._id);
+      expect(refreshed?.status).toBe('scanning');
+      expect(refreshed?.error).toBeNull();
+    });
+
+    it('returns false when workerId does not match', async () => {
+      const scan = await Scan.create({
+        userId,
+        repositoryOwner: 'safe-org',
+        repositoryName: 'other-worker-app',
+        repositoryUrl: 'https://github.com/safe-org/other-worker-app',
+        branch: 'main',
+        status: 'scanning',
+        workerId: 'worker-original',
+        cancelRequested: true,
+      });
+
+      const cancelled = await checkAndHandleScanCancellation(scan._id.toString(), 'different-worker');
+      expect(cancelled).toBe(false);
+
+      const refreshed = await Scan.findById(scan._id);
+      expect(refreshed?.status).toBe('scanning');
+    });
+
+    it('purges partial findings and cleans workspace upon cancellation', async () => {
+      const killDockerSpy = vi.spyOn(runnerModule, 'killDockerContainer').mockResolvedValue();
+      const cleanWorkspaceSpy = vi.spyOn(workspaceModule, 'cleanupWorkspace').mockResolvedValue();
+
+      const scan = await Scan.create({
+        userId,
+        repositoryOwner: 'safe-org',
+        repositoryName: 'cleanup-cancelled',
+        repositoryUrl: 'https://github.com/safe-org/cleanup-cancelled',
+        branch: 'main',
+        status: 'scanning',
+        workerId: 'worker-cleanup',
+        cancelRequested: true,
+        workspacePath: '/tmp/saferepo/cancel-test',
+      });
+
+      await Finding.create({
+        scanId: scan._id,
+        userId,
+        scanner: 'semgrep',
+        category: 'sast',
+        severity: 'high',
+        title: 'Partial Finding',
+        description: 'Should be purged',
+        file: 'test.js',
+        line: 1,
+        fingerprint: new mongoose.Types.ObjectId().toString(),
+      });
+
+      expect(await Finding.countDocuments({ scanId: scan._id })).toBe(1);
+
+      const cancelled = await checkAndHandleScanCancellation(scan._id.toString(), 'worker-cleanup');
+      expect(cancelled).toBe(true);
+
+      expect(await Finding.countDocuments({ scanId: scan._id })).toBe(0);
+      expect(cleanWorkspaceSpy).toHaveBeenCalledWith('/tmp/saferepo/cancel-test');
+      expect(killDockerSpy).toHaveBeenCalled();
+    });
+
+    it('worker abortSignal triggers when heartbeat detects cancellation', async () => {
+      const scan = await enqueueScanJob({
+        userId,
+        repositoryOwner: 'safe-org',
+        repositoryName: 'worker-cancel-test',
+        repositoryUrl: 'https://github.com/safe-org/worker-cancel-test',
+        branch: 'main',
+      });
+
+      let observedAbort = false;
+
+      const worker = createScanWorker(async (claimedScan, workerId, abortSignal) => {
+        abortSignal?.addEventListener('abort', () => {
+          observedAbort = true;
+        });
+
+        // Set cancelRequested while scan is executing
+        await Scan.updateOne({ _id: claimedScan._id }, { $set: { cancelRequested: true } });
+
+        // Trigger check
+        await checkAndHandleScanCancellation(claimedScan._id.toString(), workerId);
+      });
+      activeWorkers.push(worker);
+
+      await worker.start();
+      await new Promise((r) => setTimeout(r, 200));
+
+      const finalScan = await Scan.findById(scan._id);
+      expect(finalScan?.status).toBe('failed');
+      expect(finalScan?.error).toBe('Scan cancelled by user');
+      expect(observedAbort).toBeDefined();
+
+      await worker.stop(500);
     });
   });
 });

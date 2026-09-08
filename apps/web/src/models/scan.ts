@@ -26,6 +26,8 @@ export interface IScan extends Document {
   // Phase 06: Worker ownership and heartbeat
   workerId: string | null;
   heartbeatAt: Date | null;
+  // Phase 08: Cancellation request flag
+  cancelRequested?: boolean;
   metadata?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
@@ -110,6 +112,11 @@ const scanSchema = new Schema<IScan>(
     heartbeatAt: {
       type: Date,
       default: null,
+    },
+    // Phase 08: Cancellation request flag
+    cancelRequested: {
+      type: Boolean,
+      default: false,
     },
     metadata: {
       type: Schema.Types.Mixed,

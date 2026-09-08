@@ -88,6 +88,17 @@ const envSchema = z.object({
     .number()
     .positive()
     .default(300), // 300 seconds (5 minutes)
+  // Phase 08: Retention
+  SCAN_RETENTION_DAYS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(90),
+  MAX_SCANS_PER_USER: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(500),
   NODE_ENV: z
     .enum(['development', 'production', 'test'])
     .default('development'),
@@ -132,6 +143,8 @@ function loadEnv(): Env {
       SCAN_QUEUE_POLL_INTERVAL_MS: Number(process.env.SCAN_QUEUE_POLL_INTERVAL_MS) || 5_000,
       SCAN_STALE_TIMEOUT_MS: Number(process.env.SCAN_STALE_TIMEOUT_MS) || 360_000,
       SCAN_TIMEOUT_SECONDS: Number(process.env.SCAN_TIMEOUT_SECONDS) || 300,
+      SCAN_RETENTION_DAYS: Number(process.env.SCAN_RETENTION_DAYS) || 90,
+      MAX_SCANS_PER_USER: Number(process.env.MAX_SCANS_PER_USER) || 500,
       NODE_ENV: 'test',
     };
   }

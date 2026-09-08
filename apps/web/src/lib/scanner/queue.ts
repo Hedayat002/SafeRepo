@@ -6,6 +6,7 @@ import { Scan, type IScan } from '@/models/scan';
 import { Finding } from '@/models/finding';
 import { cleanupWorkspace } from './workspace';
 import { killDockerContainer } from './runner';
+import { cleanupExpiredScans } from './retention';
 import type { ScanQueueConfig } from '@/types';
 
 /**
@@ -119,6 +120,75 @@ export async function updateScanHeartbeat(
     { returnDocument: 'after' }
   );
   return result !== null;
+}
+
+/**
+ * Checks if cancellation was requested for an active scan and finalizes it.
+ * Transitions scan to 'failed' with error 'Scan cancelled by user', and cleans up
+ * workspace, containers, and partial findings.
+ * Returns true if the scan was cancelled, false otherwise.
+ */
+export async function checkAndHandleScanCancellation(
+  scanId: string,
+  workerId: string
+): Promise<boolean> {
+  const scan = await Scan.findOne({
+    _id: scanId,
+    workerId,
+    status: { $in: ['cloning', 'scanning', 'normalizing'] },
+    cancelRequested: true,
+  });
+
+  if (!scan) return false;
+
+  const result = await Scan.findOneAndUpdate(
+    {
+      _id: scanId,
+      workerId,
+      status: { $in: ['cloning', 'scanning', 'normalizing'] },
+      cancelRequested: true,
+    },
+    {
+      $set: {
+        status: 'failed',
+        error: 'Scan cancelled by user',
+        completedAt: new Date(),
+      },
+    },
+    { returnDocument: 'after' }
+  );
+
+  if (!result) return false;
+
+  logger.info({ scanId, workerId }, 'Active scan cancelled by worker');
+
+  // Purge partial findings
+  try {
+    await Finding.deleteMany({ scanId: scan._id });
+  } catch (err) {
+    logger.warn({ scanId, err }, 'Failed to purge partial findings on cancellation');
+  }
+
+  // Cleanup workspace
+  if (scan.workspacePath) {
+    try {
+      await cleanupWorkspace(scan.workspacePath);
+    } catch (err) {
+      logger.warn({ scanId, err }, 'Failed to clean workspace on cancellation');
+    }
+  }
+
+  // Kill active Docker containers
+  for (const scanner of DOCKER_SCANNERS) {
+    const containerName = `saferepo-scan-${scanId}-${scanner}`;
+    try {
+      await killDockerContainer(containerName);
+    } catch (err) {
+      logger.warn({ scanId, containerName, err }, 'Failed to kill container on cancellation');
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -275,7 +345,7 @@ export interface ScanWorker {
  *   own error handling and state transitions.
  */
 export function createScanWorker(
-  executeFn: (scan: IScan, workerId: string) => Promise<void>
+  executeFn: (scan: IScan, workerId: string, abortSignal?: AbortSignal) => Promise<void>
 ): ScanWorker {
   const config = getQueueConfig();
   const workerId = generateWorkerId();
@@ -285,11 +355,21 @@ export function createScanWorker(
   let activeScans = 0;
   let pollTimer: NodeJS.Timeout | null = null;
   let reconcileTimer: NodeJS.Timeout | null = null;
+  let retentionTimer: NodeJS.Timeout | null = null;
   const heartbeatTimers = new Map<string, NodeJS.Timeout>();
 
-  function startHeartbeat(scanId: string): void {
+  function startHeartbeat(scanId: string, abortController?: AbortController): void {
     const timer = setInterval(async () => {
       try {
+        // Check for cancellation requested by user
+        const wasCancelled = await checkAndHandleScanCancellation(scanId, workerId);
+        if (wasCancelled) {
+          logger.info({ scanId, workerId }, 'Heartbeat detected cancellation requested — aborted scan');
+          abortController?.abort();
+          stopHeartbeat(scanId);
+          return;
+        }
+
         const success = await updateScanHeartbeat(scanId, workerId);
         if (!success) {
           logger.warn({ scanId, workerId }, 'Heartbeat update failed — lease lost');
@@ -328,11 +408,13 @@ export function createScanWorker(
         'Worker claimed scan job'
       );
 
-      // Start heartbeat for this scan
-      startHeartbeat(scanId);
+      const abortController = new AbortController();
+
+      // Start heartbeat for this scan with cancellation detection
+      startHeartbeat(scanId, abortController);
 
       // Execute scan in background (don't block the poll loop)
-      executeFn(scan, workerId)
+      executeFn(scan, workerId, abortController.signal)
         .catch((err) => {
           logger.error(
             { scanId, err: err instanceof Error ? err.message : String(err) },
@@ -383,6 +465,23 @@ export function createScanWorker(
     reconcileTimer.unref();
   }
 
+  function startRetention(): void {
+    retentionTimer = setInterval(async () => {
+      try {
+        const result = await cleanupExpiredScans();
+        if (result.deletedScansCount > 0) {
+          logger.info(result, 'Periodic scan retention cleanup completed');
+        }
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          'Periodic scan retention cleanup failed'
+        );
+      }
+    }, 24 * 60 * 60 * 1000); // Every 24 hours
+    retentionTimer.unref();
+  }
+
   return {
     workerId,
 
@@ -406,8 +505,22 @@ export function createScanWorker(
         );
       }
 
-      // 2. Start periodic reconciliation
+      // 1b. Startup scan retention cleanup
+      try {
+        const retentionResult = await cleanupExpiredScans();
+        if (retentionResult.deletedScansCount > 0) {
+          logger.info(retentionResult, 'Startup scan retention cleanup completed');
+        }
+      } catch (err) {
+        logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          'Startup scan retention cleanup failed'
+        );
+      }
+
+      // 2. Start periodic reconciliation & retention
       startReconciliation();
+      startRetention();
 
       // 3. Start polling loop
       await startPolling();
@@ -429,6 +542,12 @@ export function createScanWorker(
       if (reconcileTimer) {
         clearInterval(reconcileTimer);
         reconcileTimer = null;
+      }
+
+      // Stop retention timer
+      if (retentionTimer) {
+        clearInterval(retentionTimer);
+        retentionTimer = null;
       }
 
       // Wait for active scans to complete (with grace period)

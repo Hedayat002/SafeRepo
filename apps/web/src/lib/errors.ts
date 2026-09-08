@@ -68,6 +68,16 @@ export class NotFoundError extends AppError {
   }
 }
 
+export class ConflictError extends AppError {
+  constructor(message = 'Resource conflict') {
+    super(message, {
+      code: 'CONFLICT',
+      statusCode: 409,
+    });
+    this.name = 'ConflictError';
+  }
+}
+
 export class RateLimitError extends AppError {
   public readonly retryAfterSeconds: number;
 

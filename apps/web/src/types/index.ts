@@ -76,6 +76,11 @@ export interface HealthResponse {
   status: 'ok' | 'error';
   db: 'connected' | 'disconnected';
   timestamp: string;
+  version?: string;
+  queue?: {
+    pending: number;
+  };
+  uptime?: number;
 }
 
 /** Scan lifecycle statuses */
