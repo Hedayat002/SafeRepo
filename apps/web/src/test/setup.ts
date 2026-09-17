@@ -24,8 +24,10 @@ beforeAll(async () => {
   process.env.ALLOWED_ORIGINS = 'http://localhost:3000';
 
   if (mongoose.connection.readyState !== 1) {
-    // Primary: use Docker MongoDB (always available via docker-compose)
-    const dockerUri = 'mongodb://admin:password@localhost:27017/saferepo_test?authSource=admin';
+    // Primary: use Docker MongoDB (always available via docker-compose) or explicit MONGODB_URI
+    const dockerUri =
+      process.env.MONGODB_URI ||
+      'mongodb://admin:password@localhost:27017/saferepo_test?authSource=admin';
     try {
       process.env.MONGODB_URI = dockerUri;
       await mongoose.connect(dockerUri, { serverSelectionTimeoutMS: 2000 });

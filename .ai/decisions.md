@@ -153,3 +153,30 @@
 - **Status:** Approved & Implemented.
 - **Reference:** docs/PHASES/PHASE_05.md, docs/SYSTEM_ARCHITECTURE.md (Section 5)
 
+---
+
+### 2026-09-10 — Phase 09: Docker Proxy Security Boundary & Dedicated Worker VM Posture
+
+- **Context:** The Scan Worker requires Docker API access to spawn Stage 1 scanner containers (Semgrep, Trivy, Gitleaks). Direct access to `/var/run/docker.sock` provides root-equivalent host privileges. While `tecnativa/docker-socket-proxy` filters HTTP API endpoints by URL regex, it cannot inspect JSON request bodies of `POST /containers/create` (cannot verify `HostConfig.Privileged`, `Binds`, or capabilities at the proxy level).
+- **Decision:** Establish a dual-boundary architectural decision:
+  1. **Local / Controlled Single-Host Beta:**
+     - Accept `tecnativa/docker-socket-proxy:0.1.1` as defense-in-depth, NOT as a complete security boundary.
+     - Treat the host as a dedicated sandbox environment.
+     - Keep the scan worker strictly isolated from the Web tier.
+     - Keep port 2375 private to internal network `worker-proxy-net` (never published).
+     - Keep Web -> proxy network path blocked.
+     - Disable all unnecessary proxy capabilities: `VOLUMES=0`, `NETWORKS=0`, `EXEC=0`, `BUILD=0`, `AUTH=0`, `SECRETS=0`, `SYSTEM=0`.
+     - Allow only container lifecycle operations: `CONTAINERS=1`, `POST=1`, `PING=1`.
+  2. **GA / Remote Production:**
+     - The proxy architecture is explicitly NOT approved as the final isolation boundary for multi-tenant production.
+     - Mandate **Dedicated Isolated Worker VM / Host** as the required production architecture.
+     - The Worker VM will run its own dedicated Docker daemon, physically separated from the Web/API host and MongoDB database.
+- **Status:** Approved (Human Review Decision 2026-09-10).
+- **Consequences:**
+  - (+) Zero Docker socket exposure to Web tier
+  - (+) Single-host beta can proceed without expensive multi-host cloud infrastructure
+  - (+) Threat model and blast radius explicitly bounded and documented
+  - (-) Proxy cannot inspect JSON bodies; requires trust in worker process integrity during beta
+  - (-) Multi-host production architecture deferred to GA deployment phase
+- **Reference:** docs/PHASES/PHASE_09.md (Section 3), docker-compose.prod.yml
+

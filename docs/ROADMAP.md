@@ -14,8 +14,8 @@
 | Phase 05 | Secret Scanning | Completed |
 | Phase 06 | Unified Scan Engine | Completed |
 | Phase 07 | Security Dashboard | Completed |
-| Phase 08 | Production Hardening | Implemented (Awaiting Human Approval) |
-| Phase 09 | Deployment and Beta Infrastructure | Not Started |
+| Phase 08 | Production Hardening | Completed |
+| Phase 09 | Deployment and Beta Infrastructure | COMPLETE — PENDING FINAL HUMAN REVIEW |
 | Phase 10 | 100-User Beta Testing | Not Started |
 
 ---
@@ -113,20 +113,18 @@
 
 ## Phase 09 — Deployment and Beta Infrastructure
 
-Objectives:
+**Status:** In Progress (Steps 1–7 Accepted, Step 8 Implemented & Awaiting Human Review, Step 9 Pending)
 
-- Validate the complete production architecture
-- Determine appropriate hosting for the web/API layer
-- Determine appropriate hosting for the scanner service
-- Verify MongoDB Atlas configuration
-- Verify GitHub integration
-- Verify secure secret management
-- Verify scanner isolation in production
-- Estimate expected infrastructure cost
-- Evaluate free-tier feasibility
-- Decide whether Vercel is appropriate for the web/API layer (option, not mandatory)
-- Decide where the scanner service should run
-- Prepare the 100-user beta environment
+### Implementation Steps & Status:
+- [x] **Step 1: Web Standalone Containerization** — `apps/web/Dockerfile`, `apps/web/next.config.mjs`, `.dockerignore` (Accepted)
+- [x] **Step 2: Scan Worker Containerization** — `apps/web/Dockerfile.worker`, non-root `workeruser`, minimal tools (Accepted)
+- [x] **Step 3: Production Compose Orchestration** — `docker-compose.prod.yml`, Docker proxy security boundary (Approved)
+- [x] **Step 4: Pre-Flight Environment Validator** — `scripts/validate-production.ts`, 49 static checks (Accepted)
+- [x] **Step 5: Production Docker Image Builds** — `saferepo-web:0.9.0`, `saferepo-worker:0.9.0` (Accepted)
+- [x] **Step 6: Scanner Image Pre-Caching** — `scripts/preload-scanners.ps1`, `scripts/preload-scanners.sh` (Accepted)
+- [x] **Step 7: Production HTTP Smoke Test Suite** — `scripts/smoke-test.ts`, 23 live/infra checks (Accepted)
+- [x] **Step 8: Production Operations Runbook & Documentation** — `docs/DEPLOYMENT_RUNBOOK.md` (Awaiting Human Review)
+- [x] **Step 9: Full Quality Gates & Wrap-Up** — 506 tests regression suite (100% PASS), lint, typecheck, audit, production validation (Complete — Pending Final Human Review)
 
 Code must be pushed to GitHub before any remote deployment.
 

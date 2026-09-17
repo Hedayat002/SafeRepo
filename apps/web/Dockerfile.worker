@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1
+# Multi-stage Dockerfile for SafeRepo Trusted Scan Worker
+#
+# Architectural Role:
+# - Standalone background polling worker process outside Next.js request lifecycle
+# - Claims scan jobs from MongoDB queue and executes multi-scanner pipeline
+# - Requires Docker CLI to spawn Stage 1 scanner containers (Semgrep, Trivy, Gitleaks)
+# - Requires Git CLI for hardened shallow repository cloning
+#
+# Security Invariants:
+# - Runs as an unprivileged non-root user (workeruser:workergroup, UID 1001)
+# - No Docker daemon installed inside this image (client CLI only)
+# - No Docker socket mounted in the image (runtime deployment concern)
+# - Zero production secrets, tokens, or .env files embedded
+# - Isolated ephemeral workspace directory (/tmp/saferepo-workspaces)
+
+# Stage 1: Base Alpine runtime with necessary CLI tools
+FROM node:24.19.0-alpine AS base
+WORKDIR /app
+# Install minimal runtime dependencies:
+# - libc6-compat: compatibility library for Node.js native bindings
+# - git: required by acquisition.ts for safe repository acquisition (shallow clone)
+# - docker-cli: required by runner.ts to spawn ephemeral Stage 1 scanner sandboxes
+RUN apk add --no-cache libc6-compat git docker-cli
+
+# Stage 2: Install dependencies (monorepo root context)
+FROM base AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY apps/web/package.json ./apps/web/
+RUN npm ci
+
+# Stage 3: Minimal production worker runner
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Create unprivileged system user and group (UID 1001)
+RUN addgroup --system --gid 1001 workergroup && \
+    adduser --system --uid 1001 -G workergroup workeruser
+
+# Copy installed dependencies and application source from monorepo context
+COPY --from=deps --chown=workeruser:workergroup /app/node_modules ./node_modules
+COPY --chown=workeruser:workergroup package.json package-lock.json ./
+COPY --chown=workeruser:workergroup apps/web ./apps/web
+
+# Allocate isolated ephemeral workspace directory for untrusted repo clones
+RUN mkdir -p /tmp/saferepo-workspaces && \
+    chown -R workeruser:workergroup /tmp/saferepo-workspaces && \
+    chmod 700 /tmp/saferepo-workspaces
+
+# Run as unprivileged user
+USER workeruser
+
+# Set working directory to web application workspace
+WORKDIR /app/apps/web
+
+# Execute the existing scan worker entrypoint via npm script
+CMD ["npm", "run", "worker"]

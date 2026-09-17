@@ -1,0 +1,290 @@
+# SafeRepo Production Docker Compose Orchestration (Phase 09 Beta Architecture)
+#
+# Network Security Topology:
+# ┌─────────────────────────────────────────────────────────────┐
+# │ public-net (Public Ingress)                                 │
+# │   └─ caddy (Ports 80, 443 exposed to public host)          │
+# └──────────────────────────────┬──────────────────────────────┘
+#                                │
+# ┌──────────────────────────────▼──────────────────────────────┐
+# │ web-net (Internal Reverse Proxy)                            │
+# │   ├─ caddy                                                  │
+# │   └─ web (Port 3000, internal only, non-root user)          │
+# └──────────────────────────────┬──────────────────────────────┘
+#                                │
+# ┌──────────────────────────────▼──────────────────────────────┐
+# │ backend-net (Database & Job Coordination)                   │
+# │   ├─ web                                                    │
+# │   ├─ worker (Standalone Node 24 worker, non-root user)      │
+# │   └─ mongo (Port 27017, internal only, persistent volume)   │
+# └──────────────────────────────┬──────────────────────────────┘
+#                                │
+# ┌──────────────────────────────▼──────────────────────────────┐
+# │ worker-proxy-net (Isolated Docker Socket Firewall)         │
+# │   ├─ worker (DOCKER_HOST=tcp://docker-proxy:2375)           │
+# │   └─ docker-proxy (Restricted API firewall, socket /ro)     │
+# └─────────────────────────────────────────────────────────────┘
+#
+# CRITICAL SECURITY INVARIANTS:
+# 1. web container has ZERO access to /var/run/docker.sock or docker-proxy.
+# 2. worker container communicates exclusively with docker-proxy over tcp://docker-proxy:2375.
+# 3. docker-proxy denies VOLUMES=0, NETWORKS=0, EXEC=0, BUILD=0, AUTH=0, SECRETS=0, SYSTEM=0.
+# 4. Only caddy exposes ports to the public host (80, 443).
+# 5. web, worker, mongo, and docker-proxy are completely private/internal.
+# 6. All application containers run as unprivileged non-root users.
+# 7. No production secrets are hard-coded in this manifest.
+
+networks:
+  public-net:
+    driver: bridge
+  web-net:
+    driver: bridge
+    internal: true
+  backend-net:
+    driver: bridge
+    internal: true
+  worker-proxy-net:
+    driver: bridge
+    internal: true
+
+volumes:
+  mongodata:
+    driver: local
+  saferepo_workspaces:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+
+services:
+  # ──────────────────────────────────────────────────────────
+  # 1. Caddy Reverse Proxy & TLS Ingress Layer
+  # ──────────────────────────────────────────────────────────
+  caddy:
+    image: caddy:2.9.1-alpine
+    container_name: saferepo-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    command: ["caddy", "reverse-proxy", "--from", ":80", "--to", "web:3000"]
+    networks:
+      - public-net
+      - web-net
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
+
+  # ──────────────────────────────────────────────────────────
+  # 2. SafeRepo Web / API Application (Next.js 16.3.3 Standalone)
+  # ──────────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: saferepo-web:0.9.0
+    container_name: saferepo-web
+    restart: unless-stopped
+    expose:
+      - "3000"
+    networks:
+      - web-net
+      - backend-net
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NEXT_TELEMETRY_DISABLED: "1"
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/saferepo}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-placeholder_app_id}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-placeholder_client_id}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-placeholder_client_secret}
+      SESSION_SECRET: ${SESSION_SECRET:-placeholder_session_secret_32_chars_minimum_len}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+      SCAN_RETENTION_DAYS: ${SCAN_RETENTION_DAYS:-90}
+      MAX_SCANS_PER_USER: ${MAX_SCANS_PER_USER:-500}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+
+  # ──────────────────────────────────────────────────────────
+  # 3. SafeRepo Scan Worker (Node.js 24 Standalone Queue Worker)
+  # ──────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.worker
+    image: saferepo-worker:0.9.0
+    container_name: saferepo-worker
+    restart: unless-stopped
+    networks:
+      - backend-net
+      - worker-proxy-net
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/saferepo}
+      DOCKER_HOST: tcp://docker-proxy:2375
+      MAX_CONCURRENT_SCANS: ${MAX_CONCURRENT_SCANS:-1}
+      SCAN_QUEUE_POLL_INTERVAL_MS: ${SCAN_QUEUE_POLL_INTERVAL_MS:-5000}
+      SCAN_STALE_TIMEOUT_MS: ${SCAN_STALE_TIMEOUT_MS:-360000}
+      SCAN_TIMEOUT_SECONDS: ${SCAN_TIMEOUT_SECONDS:-300}
+      SCAN_RETENTION_DAYS: ${SCAN_RETENTION_DAYS:-90}
+      MAX_SCANS_PER_USER: ${MAX_SCANS_PER_USER:-500}
+      SCAN_WORKSPACE_DIR: /tmp/saferepo-workspaces
+      SEMGREP_IMAGE: semgrep/semgrep:1.100.0
+      TRIVY_IMAGE: aquasec/trivy:0.59.1
+      GITLEAKS_IMAGE: zricethezav/gitleaks:v8.24.0
+      OSV_API_URL: https://api.osv.dev/v1/querybatch
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-placeholder_app_id}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-placeholder_client_id}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-placeholder_client_secret}
+      SESSION_SECRET: ${SESSION_SECRET:-placeholder_session_secret_32_chars_minimum_len}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost}
+    volumes:
+      - saferepo_workspaces:/tmp/saferepo-workspaces
+    depends_on:
+      mongo:
+        condition: service_healthy
+      docker-proxy:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 1024M
+        reservations:
+          cpus: "0.50"
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+
+  # ──────────────────────────────────────────────────────────
+  # 4. Restricted Docker Socket Proxy (Security Boundary Firewall)
+  #
+  # THREAT MODEL & LIMITATION DISCLOSURE:
+  # - tecnativa/docker-socket-proxy uses HAProxy to filter Docker API requests by HTTP URL path and method.
+  # - It enforces path-level denials: VOLUMES=0, NETWORKS=0, EXEC=0, BUILD=0, AUTH=0, SECRETS=0, SYSTEM=0.
+  # - CRITICAL LIMITATION: The proxy DOES NOT parse or inspect JSON request bodies for POST /containers/create.
+  #   It CANNOT filter out HostConfig flags such as Privileged, Binds, CapAdd, or SecurityOpt at the API payload level.
+  # - NOTE ON SOCKET MOUNT: Mounting /var/run/docker.sock:ro protects the socket inode from filesystem modification,
+  #   but DOES NOT restrict Docker API operations (API operations pass through to the daemon over read-only sockets).
+  # - BOUNDARY POSTURE: This proxy reduces daemon attack surface for local/single-host beta testing,
+  #   but is NOT an admission controller. In full production, a Dedicated Isolated Worker VM with its own Docker
+  #   daemon is the recommended defense-in-depth posture.
+  # ──────────────────────────────────────────────────────────
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.1.1
+    container_name: saferepo-docker-proxy
+    restart: unless-stopped
+    networks:
+      - worker-proxy-net
+    environment:
+      # Permitted container lifecycle operations:
+      CONTAINERS: "1"      # Allow container endpoints (/containers/*)
+      POST: "1"            # Required for container creation, start, and termination
+      ALLOW_START: "1"     # Specifically permit container start endpoint
+      ALLOW_STOP: "1"      # Specifically permit container stop endpoint
+      ALLOW_RESTARTS: "1"  # Specifically permit container restart / kill endpoints
+      IMAGES: "1"          # Allow image inspection and listing
+      PING: "1"            # Allow daemon readiness ping (/ _ping)
+      # High-risk Docker API categories strictly blocked (=0):
+      AUTH: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      EXEC: "0"
+      GRPC: "0"
+      INFO: "0"
+      NETWORKS: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SECRETS: "0"
+      SERVICES: "0"
+      SESSION: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      TASKS: "0"
+      VOLUMES: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2375/_ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+    security_opt:
+      - no-new-privileges:true
+
+  # ──────────────────────────────────────────────────────────
+  # 5. MongoDB Database Instance (Internal-Only / No Public Port)
+  # ──────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0.18-jammy
+    container_name: saferepo-mongo
+    restart: unless-stopped
+    expose:
+      - "27017"
+    networks:
+      - backend-net
+    environment:
+      MONGO_INITDB_DATABASE: saferepo
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.9.0] - Unreleased (Phase 09 In Progress)
+
+### Added - Phase 09: Production Deployment & Beta Infrastructure (Step 8)
+
+- **Production Operations Runbook (`docs/DEPLOYMENT_RUNBOOK.md`):**
+  - Authored comprehensive operational manual for Ubuntu 24.04 LTS host provisioning, Docker Engine setup, UFW firewall configuration, and SSH hardening.
+  - Documented secure server-side `.env.production` secret management and rotation procedures without repository leakage.
+  - Documented MongoDB deployment choices (MongoDB Atlas vs self-hosted MongoDB 7 container) with backup and restore validation.
+  - Documented GitHub App configuration, least-privilege repository permissions (`Contents: Read`, `Metadata: Read`), and callback routing.
+  - Formulated deployment verification checklist, ordered 10-step startup procedure, and incident response runbooks.
+- **Full Quality Gates & Wrap-Up (Step 9):**
+  - Updated `apps/web/src/test/setup.ts` to respect configurable `process.env.MONGODB_URI` while preserving default localhost:27017 fallback, resolving host port conflicts with existing Windows services.
+  - Executed full 506-test regression suite across 34 test files against temporary Docker MongoDB instance (`mongo:7.0.18-jammy`) on port 27018: 100% PASS (506/506 passed, 62.61s).
+  - Verified zero `MongoMemoryServer` fallbacks and zero downloads from `fastdl.mongodb.org`.
+  - Achieved 92.62% line coverage (statements: 92.62%, branches: 83.00%, functions: 93.95%), surpassing the 80% project threshold.
+  - Verified full quality gates: `tsc --noEmit` (0 errors), `eslint .` (0 errors), Next.js 16 production build (clean pass), `npm audit --omit=dev --audit-level=high` (0 vulnerabilities), `scripts/validate-production.ts` (49/49 PASS), and `docker compose -f docker-compose.prod.yml config -q` (0 errors).
+
+---
+
 ## [0.8.0] - 2026-09-08
 
 ### Added - Phase 08: Production Hardening
