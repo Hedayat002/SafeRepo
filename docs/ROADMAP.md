@@ -15,8 +15,8 @@
 | Phase 06 | Unified Scan Engine | Completed |
 | Phase 07 | Security Dashboard | Completed |
 | Phase 08 | Production Hardening | Completed |
-| Phase 09 | Deployment and Beta Infrastructure | COMPLETE — PENDING FINAL HUMAN REVIEW |
-| Phase 10 | 100-User Beta Testing | Not Started |
+| Phase 09 | Deployment and Beta Infrastructure | Completed (`4a74682`) |
+| Phase 10 | 100-User Beta Testing | In Progress (Step 1 Complete) |
 
 ---
 
@@ -113,7 +113,7 @@
 
 ## Phase 09 — Deployment and Beta Infrastructure
 
-**Status:** In Progress (Steps 1–7 Accepted, Step 8 Implemented & Awaiting Human Review, Step 9 Pending)
+**Status:** Completed (`4a74682` / `origin/main`)
 
 ### Implementation Steps & Status:
 - [x] **Step 1: Web Standalone Containerization** — `apps/web/Dockerfile`, `apps/web/next.config.mjs`, `.dockerignore` (Accepted)
@@ -123,20 +123,24 @@
 - [x] **Step 5: Production Docker Image Builds** — `saferepo-web:0.9.0`, `saferepo-worker:0.9.0` (Accepted)
 - [x] **Step 6: Scanner Image Pre-Caching** — `scripts/preload-scanners.ps1`, `scripts/preload-scanners.sh` (Accepted)
 - [x] **Step 7: Production HTTP Smoke Test Suite** — `scripts/smoke-test.ts`, 23 live/infra checks (Accepted)
-- [x] **Step 8: Production Operations Runbook & Documentation** — `docs/DEPLOYMENT_RUNBOOK.md` (Awaiting Human Review)
-- [x] **Step 9: Full Quality Gates & Wrap-Up** — 506 tests regression suite (100% PASS), lint, typecheck, audit, production validation (Complete — Pending Final Human Review)
-
-Code must be pushed to GitHub before any remote deployment.
-
-Do not deploy anything during this phase without human approval.
+- [x] **Step 8: Production Operations Runbook & Documentation** — `docs/DEPLOYMENT_RUNBOOK.md` (Accepted)
+- [x] **Step 9: Full Quality Gates & Wrap-Up** — 506 tests regression suite (100% PASS), lint, typecheck, audit, production validation (49/49 PASS), committed and pushed (Accepted)
 
 ---
 
 ## Phase 10 — 100-User Beta Testing
 
-- Real-world testing with ~100 beta users
-- Feedback collection and iteration
-- Bug fixes and polish
+**Status:** In Progress (Step 1 Complete; Awaiting Step 1 Review)
+
+### Implementation Steps & Status:
+- [x] **Step 1: Beta Documentation & Runbook** — Authored `docs/BETA/BETA_TEST_PLAN.md`, `COHORT_ROLLOUT_LOG.md`, `SECURITY_AUDIT_LOG.md`, `DEFECT_TRACKER.md`, `FINAL_READINESS_REPORT.md` (Complete)
+- [ ] **Step 2: Beta Environment Setup & Host Provisioning** — Server preparation per `DEPLOYMENT_RUNBOOK.md` (Pending)
+- [ ] **Step 3: Cohort 1 Execution (Internal Canary)** — 1 to 5 maintainers, benchmark & synthetic fixtures (Pending)
+- [ ] **Step 4: Cohort 2 Execution (Small External Cohort)** — 10 to 25 developers, multi-ecosystem public repositories (Pending)
+- [ ] **Step 5: Cohort 3 Execution (Expanded Cohort)** — 25 to 50 users, concurrency & queue stress testing (Pending)
+- [ ] **Step 6: Cohort 4 Execution (Full Beta Cohort)** — Up to 100 users, sustained multi-day operational workload (Pending)
+- [ ] **Step 7: Defect Remediation & Regression Testing** — Full regression on any discovered defects (Pending)
+- [ ] **Step 8: Final Exit Assessment & Operational Readiness Report** — Final closeout report for GA approval (Pending)
 
 ---
 

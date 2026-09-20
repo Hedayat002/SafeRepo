@@ -7,9 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.9.0] - Unreleased (Phase 09 In Progress)
+## [0.10.0] - Unreleased (Phase 10 In Progress)
 
-### Added - Phase 09: Production Deployment & Beta Infrastructure (Step 8)
+### Added - Phase 10: 100-User Beta Testing (Step 1)
+
+- **Beta Test Plan & Operational Specification (`docs/BETA/BETA_TEST_PLAN.md`):**
+  - Authored comprehensive beta operational master plan defining measurable evaluation objectives, staged 4-cohort rollout, and empirical measurement targets.
+  - Formulated user journey matrix grounded strictly in implemented capabilities across authentication, scan initiation, polling, and triage (archive/upload explicit non-target).
+  - Explicitly mapped full scanner architecture coverage: Semgrep SAST, Trivy SCA, Gitleaks, OSV batch client, npm audit, and pip-audit.
+  - Documented strict separation between configured limits, observed metrics, and proposed targets.
+  - Preserved Phase 09 CSP baseline (`script-src 'self' 'unsafe-inline'`) and defined 7 mandatory zero-tolerance security stop conditions.
+- **Cohort Rollout Tracking Log (`docs/BETA/COHORT_ROLLOUT_LOG.md`):**
+  - Established sequential entry/exit gating framework across Cohorts 1 to 4 with structured observation logs and human approval checkpoints.
+- **Security & Invariant Audit Log (`docs/BETA/SECURITY_AUDIT_LOG.md`):**
+  - Documented audit verification procedures for zero scanner network egress, host filesystem sandboxing, web Docker socket exclusion, Docker proxy API blocks, non-root containment, cross-user isolation, and secret redaction.
+- **Defect & Issue Tracker (`docs/BETA/DEFECT_TRACKER.md`):**
+  - Established 5-tier defect severity model (P0 Blocker to P4 Low), intake triage workflow, and active defect log.
+- **Final Beta Readiness Report Framework (`docs/BETA/FINAL_READINESS_REPORT.md`):**
+  - Authored reporting structure for empirical telemetry, security audit summaries, defect backlogs, and categorized GA exit criteria.
+
+---
+
+## [0.9.0] - 2026-09-20
+
+### Added - Phase 09: Production Deployment & Beta Infrastructure
 
 - **Production Operations Runbook (`docs/DEPLOYMENT_RUNBOOK.md`):**
   - Authored comprehensive operational manual for Ubuntu 24.04 LTS host provisioning, Docker Engine setup, UFW firewall configuration, and SSH hardening.
@@ -23,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Verified zero `MongoMemoryServer` fallbacks and zero downloads from `fastdl.mongodb.org`.
   - Achieved 92.62% line coverage (statements: 92.62%, branches: 83.00%, functions: 93.95%), surpassing the 80% project threshold.
   - Verified full quality gates: `tsc --noEmit` (0 errors), `eslint .` (0 errors), Next.js 16 production build (clean pass), `npm audit --omit=dev --audit-level=high` (0 vulnerabilities), `scripts/validate-production.ts` (49/49 PASS), and `docker compose -f docker-compose.prod.yml config -q` (0 errors).
+  - Committed and pushed to `origin/main` (`4a74682c3e9998bf916c891b7a66394cbbf8b19b`).
 
 ---
 
