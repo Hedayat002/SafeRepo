@@ -37,8 +37,8 @@ RUN MONGODB_URI="mongodb://localhost:27017/saferepo" \
     GITHUB_CLIENT_ID="build-placeholder-client-id" \
     GITHUB_CLIENT_SECRET="build-placeholder-client-secret" \
     SESSION_SECRET="build-placeholder-session-secret-32-chars-long" \
-    NEXT_PUBLIC_APP_URL="http://localhost:3000" \
-    ALLOWED_ORIGINS="http://localhost:3000" \
+    NEXT_PUBLIC_APP_URL="http://localhost" \
+    ALLOWED_ORIGINS="http://localhost" \
     npm run build
 
 # Stage 4: Minimal production runner

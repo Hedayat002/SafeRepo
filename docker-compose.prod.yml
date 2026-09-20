@@ -39,7 +39,6 @@ networks:
     driver: bridge
   web-net:
     driver: bridge
-    internal: true
   backend-net:
     driver: bridge
     internal: true
