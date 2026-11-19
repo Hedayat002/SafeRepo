@@ -3,7 +3,7 @@
 > Analyze a GitHub repository's security posture before you run it, depend on it, or trust it.
 
 **Stack:** Next.js + TypeScript + Tailwind CSS + MongoDB + Mongoose + Docker
-**Status:** Pre-Phase 00 — Documentation and architecture finalization
+**Status:** Development / Building — MVP implementation and beta infrastructure in progress
 **AI-OS:** This project follows `Workspace/AI-OS` global engineering standards.
 
 ---
@@ -162,7 +162,7 @@ See `docs/ROADMAP.md` for details.
 | `docs/PROJECT_VISION.md` | Product vision and goals |
 | `docs/REQUIREMENTS.md` | Functional and non-functional requirements |
 | `docs/SYSTEM_ARCHITECTURE.md` | Architecture and tech stack |
-| `docs/ROADMAP.md` | Phase plan and milestones |
+| `docs/ROADMAP.md` | Roadmap and milestones |
 | `docs/DATABASE_DESIGN.md` | MongoDB data model |
 | `docs/API_SPEC.md` | API responsibilities and proposed endpoints |
 | `docs/DEPLOYMENT.md` | Deployment architecture and local dev |
